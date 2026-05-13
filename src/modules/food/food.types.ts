@@ -1,6 +1,7 @@
 import type { FoodItem } from '@prisma/client'
+import type { FoodExpiryLevel } from '@/common/utils/expiry'
 
-export type FoodExpiryLevel = 'expired' | 'today' | 'within3Days' | 'within7Days' | 'normal'
+export type { FoodExpiryLevel } from '@/common/utils/expiry'
 
 export interface FoodItemWithExpiryLevel extends FoodItem {
   expiryLevel: FoodExpiryLevel

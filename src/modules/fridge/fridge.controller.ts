@@ -1,7 +1,8 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common'
-import { ApiCreatedResponse, ApiOkResponse, ApiQuery, ApiTags } from '@nestjs/swagger'
+import { ApiCreatedResponse, ApiOkResponse, ApiTags } from '@nestjs/swagger'
 import { CreateFridgeDto } from './dto/create-fridge.dto'
 import { CreateStorageShelfDto } from './dto/create-storage-shelf.dto'
+import { ListFridgeDto } from './dto/list-fridge.dto'
 import { UpdateFridgeDto } from './dto/update-fridge.dto'
 import { UpdateStorageShelfDto } from './dto/update-storage-shelf.dto'
 import { FridgeService } from './fridge.service'
@@ -12,10 +13,9 @@ export class FridgeController {
   constructor(private readonly fridgeService: FridgeService) {}
 
   @Get()
-  @ApiQuery({ name: 'userId', required: false })
   @ApiOkResponse({ description: 'List fridges with shelves.' })
-  list(@Query('userId') userId?: string) {
-    return this.fridgeService.list(userId)
+  list(@Query() query: ListFridgeDto) {
+    return this.fridgeService.list(query)
   }
 
   @Post()

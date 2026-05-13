@@ -6,6 +6,7 @@ import { PrismaService } from '@/database/prisma.service'
 import { DEFAULT_STORAGE_SHELVES } from './fridge.constants'
 import type { CreateFridgeDto } from './dto/create-fridge.dto'
 import type { CreateStorageShelfDto } from './dto/create-storage-shelf.dto'
+import type { ListFridgeDto } from './dto/list-fridge.dto'
 import type { UpdateFridgeDto } from './dto/update-fridge.dto'
 import type { UpdateStorageShelfDto } from './dto/update-storage-shelf.dto'
 
@@ -13,9 +14,9 @@ import type { UpdateStorageShelfDto } from './dto/update-storage-shelf.dto'
 export class FridgeService {
   constructor(private readonly prisma: PrismaService) {}
 
-  list(userId?: string) {
+  list(query: ListFridgeDto = {}) {
     return this.prisma.fridge.findMany({
-      where: userId ? { userId } : undefined,
+      where: query.userId ? { userId: query.userId } : undefined,
       include: {
         shelves: {
           orderBy: [{ area: 'asc' }, { sort: 'asc' }],

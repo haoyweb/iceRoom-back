@@ -12,16 +12,23 @@ describe('FoodService', () => {
             expireDate: new Date('2020-01-01T00:00:00.000Z'),
           },
         ]),
+        count: jest.fn().mockResolvedValue(1),
       },
     }
     const service = new FoodService(prisma as never)
 
-    await expect(service.listExpiring({})).resolves.toEqual([
-      expect.objectContaining({
-        id: 'food_1',
-        expiryLevel: 'expired',
-      }),
-    ])
+    const result = await service.listExpiring({})
+    expect(result).toEqual(expect.objectContaining({
+      total: 1,
+      page: 1,
+      pageSize: 100,
+      list: [
+        expect.objectContaining({
+          id: 'food_1',
+          expiryLevel: 'expired',
+        }),
+      ],
+    }))
   })
 
   it('auto-calculates expire date when expireDate is omitted', async () => {
@@ -117,8 +124,10 @@ describe('FoodService', () => {
   it('consumes quantity and marks food consumed when quantity reaches zero', async () => {
     const tx = {
       foodItem: {
-        findUnique: jest.fn().mockResolvedValue({ id: 'food_1', name: '番茄', quantity: new Prisma.Decimal(1), status: FoodStatus.normal, unit: '个' }),
-        update: jest.fn().mockResolvedValue({ id: 'food_1', quantity: new Prisma.Decimal(0), status: FoodStatus.consumed, unit: '个' }),
+        findMany: jest.fn().mockResolvedValue([
+          { id: 'food_1', name: '番茄', quantity: new Prisma.Decimal(1), status: FoodStatus.normal, unit: '个' },
+        ]),
+        update: jest.fn().mockResolvedValue({ id: 'food_1', status: FoodStatus.consumed, unit: '个' }),
       },
     }
     const prisma = {
@@ -145,7 +154,9 @@ describe('FoodService', () => {
   it('rejects consuming more than current quantity', async () => {
     const tx = {
       foodItem: {
-        findUnique: jest.fn().mockResolvedValue({ id: 'food_1', name: '番茄', quantity: new Prisma.Decimal(1), status: FoodStatus.normal, unit: '个' }),
+        findMany: jest.fn().mockResolvedValue([
+          { id: 'food_1', name: '番茄', quantity: new Prisma.Decimal(1), status: FoodStatus.normal, unit: '个' },
+        ]),
       },
     }
     const prisma = {
@@ -162,7 +173,9 @@ describe('FoodService', () => {
   it('rejects partial consumption for food without quantity', async () => {
     const tx = {
       foodItem: {
-        findUnique: jest.fn().mockResolvedValue({ id: 'food_1', name: '盐', quantity: null, status: FoodStatus.normal, unit: null }),
+        findMany: jest.fn().mockResolvedValue([
+          { id: 'food_1', name: '盐', quantity: null, status: FoodStatus.normal, unit: null },
+        ]),
       },
     }
     const prisma = {
@@ -176,6 +189,57 @@ describe('FoodService', () => {
     })
   })
 
+  it('rejects duplicate foodId in consume batch', async () => {
+    const prisma = {
+      $transaction: jest.fn(),
+    }
+    const service = new FoodService(prisma as never)
+
+    await expect(
+      service.consumeBatch({
+        items: [
+          { foodId: 'food_1', quantity: 1 },
+          { foodId: 'food_1', quantity: 1 },
+        ],
+      }),
+    ).rejects.toMatchObject({
+      response: '扣减列表中存在重复的食材',
+      status: HttpStatus.BAD_REQUEST,
+    })
+    expect(prisma.$transaction).not.toHaveBeenCalled()
+  })
+
+  it('uses a single findMany for batch consume to avoid N+1', async () => {
+    const tx = {
+      foodItem: {
+        findMany: jest.fn().mockResolvedValue([
+          { id: 'food_1', name: '番茄', quantity: new Prisma.Decimal(2), status: FoodStatus.normal, unit: '个' },
+          { id: 'food_2', name: '鸡蛋', quantity: new Prisma.Decimal(5), status: FoodStatus.normal, unit: '个' },
+        ]),
+        update: jest.fn()
+          .mockResolvedValueOnce({ id: 'food_1', status: FoodStatus.normal, unit: '个' })
+          .mockResolvedValueOnce({ id: 'food_2', status: FoodStatus.normal, unit: '个' }),
+      },
+    }
+    const prisma = {
+      $transaction: jest.fn().mockImplementation((callback: (txArg: typeof tx) => Promise<unknown>) => callback(tx)),
+    }
+    const service = new FoodService(prisma as never)
+
+    await service.consumeBatch({
+      items: [
+        { foodId: 'food_1', quantity: 1 },
+        { foodId: 'food_2', quantity: 2 },
+      ],
+    })
+
+    expect(tx.foodItem.findMany).toHaveBeenCalledTimes(1)
+    expect(tx.foodItem.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: { in: ['food_1', 'food_2'] } },
+    }))
+    expect(tx.foodItem.update).toHaveBeenCalledTimes(2)
+  })
+
   it('passes configurable expiring query to Prisma', async () => {
     let findManyArg: { where: { expireDate: { gte: Date, lte: Date }, fridgeId: string, status: FoodStatus } } | undefined
     const prisma = {
@@ -185,6 +249,7 @@ describe('FoodService', () => {
           findManyArg = arg
           return Promise.resolve([])
         }),
+        count: jest.fn().mockResolvedValue(0),
       },
     }
     const service = new FoodService(prisma as never)

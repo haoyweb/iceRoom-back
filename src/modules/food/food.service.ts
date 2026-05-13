@@ -1,8 +1,9 @@
 import { HttpStatus, Injectable } from '@nestjs/common'
-import { ExpireDateSource, FoodStatus, Prisma } from '@prisma/client'
+import { ExpireDateSource, FoodStatus, Prisma, StorageArea } from '@prisma/client'
 import { createPageResult } from '@/common/dto/page.dto'
 import { BusinessException } from '@/common/errors/business.exception'
 import { ErrorCode } from '@/common/errors/error-code.enum'
+import { withExpiryInfo } from '@/common/utils/expiry'
 import { PrismaService } from '@/database/prisma.service'
 import { calculateExpireDate, getFreshnessDays } from './food-freshness.constants'
 import type { ConsumeFoodBatchDto } from './dto/consume-food-batch.dto'
@@ -11,7 +12,6 @@ import type { ExpiringFoodQueryDto } from './dto/expiring-food-query.dto'
 import type { FoodQueryDto } from './dto/food-query.dto'
 import type { UpdateFoodStatusDto } from './dto/update-food-status.dto'
 import type { UpdateFoodDto } from './dto/update-food.dto'
-import type { FoodExpiryLevel, FoodItemWithExpiryLevel } from './food.types'
 
 @Injectable()
 export class FoodService {
@@ -69,11 +69,11 @@ export class FoodService {
     const fridgeId = data.fridgeId ?? current.fridgeId
     const shelfId = data.shelfId ?? current.shelfId
 
-    await this.ensureShelfBelongsToFridge(fridgeId, shelfId)
+    const shelf = await this.ensureShelfBelongsToFridge(fridgeId, shelfId)
 
     const food = await this.prisma.foodItem.update({
       where: { id },
-      data: this.toFoodUpdateInput(data),
+      data: this.toFoodUpdateInput(data, current, shelf.area),
       include: { shelf: true },
     })
 
@@ -93,59 +93,71 @@ export class FoodService {
   }
 
   async consumeBatch(data: ConsumeFoodBatchDto) {
+    const foodIds = data.items.map((item) => item.foodId)
+    if (new Set(foodIds).size !== foodIds.length) {
+      throw new BusinessException(ErrorCode.BAD_REQUEST, '扣减列表中存在重复的食材', HttpStatus.BAD_REQUEST)
+    }
+
     return this.prisma.$transaction(async (tx) => {
-      const details = []
+      const foods = await tx.foodItem.findMany({
+        where: { id: { in: foodIds } },
+        select: { id: true, name: true, quantity: true, status: true, unit: true },
+      })
+      const foodMap = new Map(foods.map((food) => [food.id, food]))
 
-      for (const item of data.items) {
-        const food = await tx.foodItem.findUnique({
-          where: { id: item.foodId },
-          select: { id: true, name: true, quantity: true, status: true, unit: true },
-        })
-
+      const plans = data.items.map((item) => {
+        const food = foodMap.get(item.foodId)
         if (!food) {
           throw new BusinessException(ErrorCode.FOOD_NOT_FOUND, '食材不存在', HttpStatus.NOT_FOUND)
         }
-
         if (food.status !== FoodStatus.normal) {
           throw new BusinessException(ErrorCode.BAD_REQUEST, '只能扣减正常状态的食材', HttpStatus.BAD_REQUEST)
         }
-
         if (!food.quantity) {
           throw new BusinessException(ErrorCode.BAD_REQUEST, '没有数量的食材不能部分扣减', HttpStatus.BAD_REQUEST)
         }
 
         const currentQuantity = new Prisma.Decimal(food.quantity)
         const consumedQuantity = new Prisma.Decimal(item.quantity)
-
         if (currentQuantity.lt(consumedQuantity)) {
           throw new BusinessException(ErrorCode.BAD_REQUEST, '扣减数量不能超过当前库存', HttpStatus.BAD_REQUEST)
         }
 
         const remainingQuantity = currentQuantity.minus(consumedQuantity)
         const status = remainingQuantity.equals(0) ? FoodStatus.consumed : FoodStatus.normal
-        const updated = await tx.foodItem.update({
-          where: { id: item.foodId },
-          data: {
-            quantity: remainingQuantity,
-            status,
-          },
-          select: { id: true, status: true, quantity: true, unit: true },
-        })
 
-        details.push({
-          foodId: updated.id,
+        return {
+          foodId: item.foodId,
           name: food.name,
-          previousQuantity: currentQuantity.toNumber(),
-          consumedQuantity: consumedQuantity.toNumber(),
-          remainingQuantity: remainingQuantity.toNumber(),
-          status: updated.status,
-          unit: updated.unit,
-        })
-      }
+          currentQuantity,
+          consumedQuantity,
+          remainingQuantity,
+          status,
+        }
+      })
+
+      const results = await Promise.all(
+        plans.map(async (plan) => {
+          const updated = await tx.foodItem.update({
+            where: { id: plan.foodId },
+            data: { quantity: plan.remainingQuantity, status: plan.status },
+            select: { id: true, status: true, unit: true },
+          })
+          return {
+            foodId: updated.id,
+            name: plan.name,
+            previousQuantity: plan.currentQuantity.toNumber(),
+            consumedQuantity: plan.consumedQuantity.toNumber(),
+            remainingQuantity: plan.remainingQuantity.toNumber(),
+            status: updated.status,
+            unit: updated.unit,
+          }
+        }),
+      )
 
       return {
         recipeName: data.recipeName ?? null,
-        items: details,
+        items: results,
       }
     })
   }
@@ -162,6 +174,8 @@ export class FoodService {
     const days = query.days ?? 7
     const includeExpired = query.includeExpired ?? true
     const status = query.status ?? FoodStatus.normal
+    const page = query.page ?? 1
+    const pageSize = query.pageSize ?? 100
     const end = new Date()
     end.setHours(23, 59, 59, 999)
     end.setDate(end.getDate() + days)
@@ -170,26 +184,41 @@ export class FoodService {
       await this.ensureFridgeExists(query.fridgeId)
     }
 
-    const list = await this.prisma.foodItem.findMany({
-      where: {
-        fridgeId: query.fridgeId,
-        status,
-        expireDate: {
-          ...(includeExpired ? {} : { gte: this.startOfToday() }),
-          lte: end,
-        },
+    const where: Prisma.FoodItemWhereInput = {
+      fridgeId: query.fridgeId,
+      status,
+      expireDate: {
+        ...(includeExpired ? {} : { gte: this.startOfToday() }),
+        lte: end,
       },
-      include: { shelf: true },
-      orderBy: { expireDate: 'asc' },
-    })
+    }
 
-    return list.map((item) => this.withExpiryLevel(item))
+    const [list, total] = await Promise.all([
+      this.prisma.foodItem.findMany({
+        where,
+        include: { shelf: true },
+        orderBy: { expireDate: 'asc' },
+        skip: (page - 1) * pageSize,
+        take: pageSize,
+      }),
+      this.prisma.foodItem.count({ where }),
+    ])
+
+    return createPageResult(list.map((item) => this.withExpiryLevel(item)), total, page, pageSize)
   }
 
   async ensureFoodExists(id: string) {
     const food = await this.prisma.foodItem.findUnique({
       where: { id },
-      select: { id: true, fridgeId: true, shelfId: true },
+      select: {
+        id: true,
+        fridgeId: true,
+        shelfId: true,
+        name: true,
+        category: true,
+        purchaseDate: true,
+        expireDateSource: true,
+      },
     })
 
     if (!food) {
@@ -245,51 +274,39 @@ export class FoodService {
     }
   }
 
-  private toFoodUpdateInput(data: UpdateFoodDto): Prisma.FoodItemUncheckedUpdateInput {
-    return {
+  private toFoodUpdateInput(
+    data: UpdateFoodDto,
+    current: { name: string, category: Prisma.FoodItemUncheckedUpdateInput['category'], purchaseDate: Date | null, expireDateSource: ExpireDateSource },
+    storageArea: StorageArea,
+  ): Prisma.FoodItemUncheckedUpdateInput {
+    const result: Prisma.FoodItemUncheckedUpdateInput = {
       ...data,
       quantity: data.quantity === undefined ? undefined : new Prisma.Decimal(data.quantity),
       purchaseDate: data.purchaseDate ? new Date(data.purchaseDate) : undefined,
-      expireDate: data.expireDate ? new Date(data.expireDate) : undefined,
-      expireDateSource: data.expireDate ? ExpireDateSource.manual : undefined,
     }
+
+    if (data.expireDate) {
+      result.expireDate = new Date(data.expireDate)
+      result.expireDateSource = ExpireDateSource.manual
+      return result
+    }
+
+    const affectsAutoEstimate = current.expireDateSource === ExpireDateSource.auto
+      && (data.name !== undefined || data.category !== undefined || data.shelfId !== undefined || data.purchaseDate !== undefined)
+
+    if (affectsAutoEstimate) {
+      const name = data.name ?? current.name
+      const category = data.category ?? (current.category as Parameters<typeof getFreshnessDays>[1])
+      const purchaseDate = data.purchaseDate ? new Date(data.purchaseDate) : current.purchaseDate ?? new Date()
+      result.expireDate = calculateExpireDate(purchaseDate, getFreshnessDays(name, category, storageArea))
+      result.expireDateSource = ExpireDateSource.auto
+    }
+
+    return result
   }
 
-  private withExpiryLevel<T extends { expireDate: Date }>(item: T): T & Pick<FoodItemWithExpiryLevel, 'expiryLevel' | 'daysToExpire'> {
-    const daysToExpire = this.getDaysToExpire(item.expireDate)
-
-    return {
-      ...item,
-      daysToExpire,
-      expiryLevel: this.getExpiryLevel(daysToExpire),
-    }
-  }
-
-  private getDaysToExpire(expireDate: Date) {
-    const target = new Date(expireDate)
-    target.setHours(0, 0, 0, 0)
-
-    return Math.ceil((target.getTime() - this.startOfToday().getTime()) / 86_400_000)
-  }
-
-  private getExpiryLevel(daysToExpire: number): FoodExpiryLevel {
-    if (daysToExpire < 0) {
-      return 'expired'
-    }
-
-    if (daysToExpire === 0) {
-      return 'today'
-    }
-
-    if (daysToExpire <= 3) {
-      return 'within3Days'
-    }
-
-    if (daysToExpire <= 7) {
-      return 'within7Days'
-    }
-
-    return 'normal'
+  private withExpiryLevel<T extends { expireDate: Date }>(item: T) {
+    return withExpiryInfo(item)
   }
 
   private startOfToday() {
