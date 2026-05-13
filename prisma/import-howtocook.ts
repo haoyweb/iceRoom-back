@@ -5,10 +5,11 @@
  * 默认从本地缓存目录 .cache/howtocook-data/ 读取（先 `git clone --depth 1` 一次即可）。
  *
  * 用法：
- *   pnpm ts-node prisma/import-howtocook.ts                # dry-run，只打印统计与样本
- *   pnpm ts-node prisma/import-howtocook.ts --confirm      # 真入库（createMany + skipDuplicates）
- *   pnpm ts-node prisma/import-howtocook.ts --source <dir> # 指定数据源目录
- *   pnpm ts-node prisma/import-howtocook.ts --limit 50     # 只处理前 N 条
+ *   pnpm ts-node prisma/import-howtocook.ts                       # dry-run，只打印统计与样本
+ *   pnpm ts-node prisma/import-howtocook.ts --confirm              # 真入库（createMany + skipDuplicates）
+ *   pnpm ts-node prisma/import-howtocook.ts --confirm --reset      # 先删 popularityScore=50 的旧批次再重插
+ *   pnpm ts-node prisma/import-howtocook.ts --source <dir>         # 指定数据源目录
+ *   pnpm ts-node prisma/import-howtocook.ts --limit 50             # 只处理前 N 条
  *
  * 解析策略：HowToCook 每篇菜谱遵循 6 段式 markdown 模板，提取
  *   - 标题（去掉"的做法"后缀）
@@ -61,17 +62,34 @@ interface ParsedRecipe {
 
 // 量词集合：用于去除"数字+量词"前后缀。集中定义便于将来增减（如新增"袋装"、"盒装"等）。
 const QUANTITY_UNIT = '克|g|kg|ml|毫升|升|斤|两|个|只|片|块|根|颗|瓣|条|包|盒|袋|份|大勺|小勺|茶匙|汤匙|杯|碗'
-const LEADING_QUANTITY = new RegExp(`^\\d+(\\.\\d+)?\\s*(${QUANTITY_UNIT})\\s*`)
+// 前缀量词允许中文数字（一/二/.../十/百/千/两/半），让"一个鸡蛋"、"半个西瓜"也能被剥离
+const LEADING_QUANTITY = new RegExp(`^[一二三四五六七八九十百千两半\\d]+(\\.\\d+)?\\s*(${QUANTITY_UNIT})\\s*`)
+// 尾部只剥阿拉伯数字 + 量词；尾部不剥中文数字以保护"五花肉"等以中文数字开头的食材名
 const TRAILING_QUANTITY = new RegExp(`\\s*\\d+(\\.\\d+)?\\s*(${QUANTITY_UNIT}).*$`)
+
+// 已知子段落/章节前缀白名单：用于剥除 bullet 内的"标签：内容"格式。
+// 必须用白名单，否则会误伤"奶油奶酪：212g"这类"食材名：数量"写法。
+const KNOWN_LABEL_PREFIX = /^(原料|食材|主料|配料|辅料|调味料|调料|腌料|工具|器具|厨具|可选|必备|建议|其他调味料|其它调味料|菜类材料|面食材料)\s*[:：]\s*/
 
 function normalizeIngredient(raw: string): string | null {
   let s = raw.trim()
   // 去 markdown 列表前缀
   s = s.replace(/^[*\-+]\s+/, '').trim()
+  // 去 markdown 图片引用 ![alt](url) 残留
+  s = s.replace(/!\[[^\]]*\][^\s]*/g, '').trim()
   // 去 backtick / 加粗 / 下划线
   s = s.replace(/[`*_]/g, '').trim()
-  // 全角逗号/顿号视为食材分隔，只取第一段。"黑鳕鱼，带皮" → "黑鳕鱼"
-  const segments = s.split(/[,，、]/)
+  // 去行首 [xxx] 标记（"[可选] 柠檬汁" → "柠檬汁"）
+  s = s.replace(/^\[[^\]]*\]\s*/, '').trim()
+  // 去已知子段落标签前缀（"原料：半干荞麦面" → "半干荞麦面"）
+  s = s.replace(KNOWN_LABEL_PREFIX, '').trim()
+  // "食材名：数量" 格式：冒号后跟数字时，认为冒号后是数量描述，剥掉冒号及之后
+  // 例："奶油奶酪：212g" → "奶油奶酪"; "白砂糖：60g" → "白砂糖"
+  if (/[:：]\s*\d/.test(s)) {
+    s = s.replace(/\s*[:：]\s*\d.*$/, '').trim()
+  }
+  // 全角逗号/顿号/斜杠/或字/加号视为食材分隔，只取第一段
+  const segments = s.split(/[,，、/+]|\s+or\s+|或/)
   const first = segments[0]
   if (first !== undefined) s = first.trim()
   // 去掉括号注释及之后内容（中英文括号都处理）
@@ -171,6 +189,9 @@ function parseRecipe(filePath: string, content: string, category: string): Parse
       const candidate = line.replace(/^[*\-+]\s+/, '').trim()
       if (/https?:\/\//.test(candidate)) continue
       if (candidate.startsWith('[') || candidate.startsWith('做法参考')) continue
+      // 跳过含 markdown 残留的行（**加粗**、内嵌链接等）以及全是符号的行
+      if (/\*\*|^#+\s|^>\s/.test(candidate)) continue
+      if (!/[一-龥a-zA-Z]/.test(candidate)) continue
       if (candidate.length < 6) continue
       reasonHint = candidate.slice(0, 60)
       break
@@ -226,14 +247,16 @@ function deriveCategory(relPath: string): string {
 interface CliOptions {
   source: string
   confirm: boolean
+  reset: boolean
   limit?: number
 }
 
 function parseArgs(args: string[]): CliOptions {
-  const opts: CliOptions = { source: '.cache/howtocook-data', confirm: false }
+  const opts: CliOptions = { source: '.cache/howtocook-data', confirm: false, reset: false }
   for (let i = 0; i < args.length; i += 1) {
     const arg = args[i]
     if (arg === '--confirm') opts.confirm = true
+    else if (arg === '--reset') opts.reset = true
     else if (arg === '--source') opts.source = args[i + 1] ?? opts.source
     else if (arg === '--limit') opts.limit = Number(args[i + 1])
   }
@@ -325,10 +348,18 @@ async function main() {
       popularityScore: 50,
     }))
     const before = await prisma.recipeSuggestionRule.count()
+    let resetCount = 0
+    if (opts.reset) {
+      // 仅清理 popularityScore=50 的 HowToCook 批次，保留 seed.ts 的种子（100/80/70）。
+      // 这样脚本可重复运行，每次都基于最新词典重新生成数据。
+      const deleted = await prisma.recipeSuggestionRule.deleteMany({ where: { popularityScore: 50 } })
+      resetCount = deleted.count
+      console.log(`\n[--reset] 已清理 popularityScore=50 的旧记录 ${resetCount} 条`)
+    }
     const result = await prisma.recipeSuggestionRule.createMany({ data, skipDuplicates: true })
     const after = await prisma.recipeSuggestionRule.count()
     console.log(`\n入库完成：`)
-    console.log(`  数据库原有 ${before} 条`)
+    console.log(`  数据库原有 ${before} 条${opts.reset ? `（清理 ${resetCount} 条后剩 ${before - resetCount}）` : ''}`)
     console.log(`  本次新写入 ${result.count} 条`)
     console.log(`  当前总数 ${after} 条`)
   } finally {
