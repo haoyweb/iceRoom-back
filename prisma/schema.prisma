@@ -1,0 +1,115 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum FoodCategory {
+  vegetable
+  fruit
+  meat
+  egg_milk
+  staple
+  seasoning
+  other
+}
+
+enum StorageArea {
+  fridge
+  freezer
+  door
+  drawer
+}
+
+enum FoodStatus {
+  normal
+  consumed
+  discarded
+}
+
+enum RecipeDifficulty {
+  easy
+  medium
+  hard
+}
+
+enum ExpireDateSource {
+  manual
+  auto
+}
+
+model User {
+  id        String   @id @default(cuid())
+  nickname  String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  fridges   Fridge[]
+}
+
+model Fridge {
+  id        String         @id @default(cuid())
+  name      String
+  userId    String
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
+  user      User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  shelves   StorageShelf[]
+  foods     FoodItem[]
+
+  @@index([userId])
+}
+
+model StorageShelf {
+  id        String      @id @default(cuid())
+  fridgeId  String
+  area      StorageArea
+  name      String
+  sort      Int
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
+  fridge    Fridge      @relation(fields: [fridgeId], references: [id], onDelete: Cascade)
+  foods     FoodItem[]
+
+  @@index([fridgeId])
+  @@unique([fridgeId, area, name])
+}
+
+model FoodItem {
+  id           String       @id @default(cuid())
+  fridgeId     String
+  shelfId      String
+  name         String
+  category     FoodCategory
+  quantity     Decimal?     @db.Decimal(10, 2)
+  unit         String?
+  purchaseDate     DateTime?
+  expireDate       DateTime
+  expireDateSource ExpireDateSource @default(manual)
+  status           FoodStatus       @default(normal)
+  note         String?
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+  fridge       Fridge       @relation(fields: [fridgeId], references: [id], onDelete: Cascade)
+  shelf        StorageShelf @relation(fields: [shelfId], references: [id])
+
+  @@index([fridgeId, expireDate])
+  @@index([shelfId])
+  @@index([status])
+}
+
+model RecipeSuggestionRule {
+  id                  String           @id @default(cuid())
+  name                String           @unique
+  requiredIngredients String[]
+  optionalIngredients String[]
+  missingIngredients  String[]
+  difficulty          RecipeDifficulty
+  estimatedMinutes    Int
+  reasonTemplate      String
+  popularityScore     Int              @default(0)
+  createdAt           DateTime         @default(now())
+  updatedAt           DateTime         @updatedAt
+}
