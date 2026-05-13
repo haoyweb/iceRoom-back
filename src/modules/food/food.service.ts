@@ -240,12 +240,15 @@ export class FoodService {
   }
 
   private async ensureShelfBelongsToFridge(fridgeId: string, shelfId: string) {
-    await this.ensureFridgeExists(fridgeId)
-
-    const shelf = await this.prisma.storageShelf.findUnique({
-      where: { id: shelfId },
-      select: { id: true, fridgeId: true, area: true },
-    })
+    // 两个查询独立，可并行减少一次 RTT。Promise.all 在任一抛错时直接 reject，
+    // 行为与原串行版本一致。
+    const [, shelf] = await Promise.all([
+      this.ensureFridgeExists(fridgeId),
+      this.prisma.storageShelf.findUnique({
+        where: { id: shelfId },
+        select: { id: true, fridgeId: true, area: true },
+      }),
+    ])
 
     if (!shelf) {
       throw new BusinessException(ErrorCode.STORAGE_SHELF_NOT_FOUND, '冰箱层位不存在', HttpStatus.NOT_FOUND)

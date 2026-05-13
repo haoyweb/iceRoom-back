@@ -1,5 +1,5 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common'
-import { ApiCreatedResponse, ApiOkResponse, ApiTags } from '@nestjs/swagger'
+import { ApiCreatedResponse, ApiOkResponse, ApiParam, ApiTags } from '@nestjs/swagger'
 import { CreateFridgeDto } from './dto/create-fridge.dto'
 import { CreateStorageShelfDto } from './dto/create-storage-shelf.dto'
 import { ListFridgeDto } from './dto/list-fridge.dto'
@@ -8,6 +8,9 @@ import { UpdateStorageShelfDto } from './dto/update-storage-shelf.dto'
 import { FridgeService } from './fridge.service'
 
 @ApiTags('fridge')
+@ApiParam({ name: 'fridgeId', required: false, example: 'fridge_demo', description: '冰箱 ID（出现在 :fridgeId 路径段）' })
+@ApiParam({ name: 'shelfId', required: false, example: 'shelf_demo', description: '层位 ID（出现在 :shelfId 路径段）' })
+@ApiParam({ name: 'id', required: false, example: 'fridge_demo', description: '冰箱 ID（出现在 :id 路径段）' })
 @Controller('fridges')
 export class FridgeController {
   constructor(private readonly fridgeService: FridgeService) {}

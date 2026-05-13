@@ -93,7 +93,9 @@ model FoodItem {
   createdAt    DateTime     @default(now())
   updatedAt    DateTime     @updatedAt
   fridge       Fridge       @relation(fields: [fridgeId], references: [id], onDelete: Cascade)
-  shelf        StorageShelf @relation(fields: [shelfId], references: [id])
+  // 层位删除策略：业务层在 FridgeService.removeShelf 中已拒绝"带食材删层位"，
+  // DB 层显式 Restrict 是兜底，防止任何代码绕过业务校验时静默删除食材。
+  shelf        StorageShelf @relation(fields: [shelfId], references: [id], onDelete: Restrict)
 
   @@index([fridgeId, expireDate])
   @@index([shelfId])

@@ -1,3 +1,13 @@
+/**
+ * 推荐规则种子数据。
+ *
+ * 本脚本可以安全地重复运行（幂等）：
+ * - 依赖 RecipeSuggestionRule.name 字段的 @unique 约束
+ * - createMany + skipDuplicates 保证已存在的同名规则不会重复插入或报错
+ *
+ * 注意：若调整某个规则的 ingredients / popularityScore，需要先删除旧记录或改用 upsert，
+ * skipDuplicates 不会更新现有行。
+ */
 import { PrismaClient, RecipeDifficulty } from '@prisma/client'
 
 const prisma = new PrismaClient()
