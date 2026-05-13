@@ -18,6 +18,6 @@ export class RecipeSuggestionController {
   @Get('by-fridge')
   @ApiOkResponse({ description: 'Suggest recipes by normal foods in a fridge.' })
   suggestByFridge(@Query() query: RecipeSuggestionByFridgeDto) {
-    return this.recipeSuggestionService.suggestByFridge(query.fridgeId)
+    return this.recipeSuggestionService.suggestByFridge(query.fridgeId, query.limit)
   }
 }

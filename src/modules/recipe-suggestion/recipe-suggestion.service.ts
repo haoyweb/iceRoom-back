@@ -41,7 +41,7 @@ export class RecipeSuggestionService {
       .sort((a, b) => b.matchedIngredients.length - a.matchedIngredients.length || a.missingIngredients.length - b.missingIngredients.length || b.popularityScore - a.popularityScore)
   }
 
-  async suggestByFridge(fridgeId: string) {
+  async suggestByFridge(fridgeId: string, limit = 10) {
     const fridge = await this.prisma.fridge.findUnique({
       where: { id: fridgeId },
       select: { id: true },
@@ -65,7 +65,14 @@ export class RecipeSuggestionService {
       foodMap.set(food.name, [...(foodMap.get(food.name) ?? []), food])
     }
 
+    // 把"用户冰箱里有的食材名"放到 SQL 层做匹配筛选：只有 requiredIngredients 与
+    // 用户食材有交集（PostgreSQL 数组 hasSome）的规则才进入排序池，从 364 条降到
+    // 通常 ≤100 条，再 JS 端排序后 slice。在没有食材时直接返回空数组。
+    const userIngredients = [...foodMap.keys()]
+    if (userIngredients.length === 0) return []
+
     const rules = await this.prisma.recipeSuggestionRule.findMany({
+      where: { requiredIngredients: { hasSome: userIngredients } },
       orderBy: [{ popularityScore: 'desc' }, { estimatedMinutes: 'asc' }],
     })
 
@@ -97,7 +104,6 @@ export class RecipeSuggestionService {
           popularityScore: rule.popularityScore,
         }
       })
-      .filter((item) => item.matchedFoods.length > 0)
       .sort(
         (a, b) =>
           b.expiringScore - a.expiringScore ||
@@ -106,5 +112,6 @@ export class RecipeSuggestionService {
           b.popularityScore - a.popularityScore ||
           a.estimatedMinutes - b.estimatedMinutes,
       )
+      .slice(0, limit)
   }
 }

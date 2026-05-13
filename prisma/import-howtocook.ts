@@ -95,7 +95,7 @@ interface ParsedRecipe {
 }
 
 // 量词集合：用于去除"数字+量词"前后缀。集中定义便于将来增减（如新增"袋装"、"盒装"等）。
-const QUANTITY_UNIT = '克|g|kg|ml|毫升|升|斤|两|个|只|片|块|根|颗|瓣|条|包|盒|袋|份|大勺|小勺|茶匙|汤匙|杯|碗'
+const QUANTITY_UNIT = '克|g|kg|ml|毫升|升|斤|两|个|只|片|块|根|颗|瓣|条|包|盒|袋|份|大勺|小勺|茶匙|汤匙|杯|碗|cm|mm|厘米|毫米|寸|段|节|把|捧|撮|束'
 // 前缀量词允许中文数字（一/二/.../十/百/千/两/半），让"一个鸡蛋"、"半个西瓜"也能被剥离
 const LEADING_QUANTITY = new RegExp(`^[一二三四五六七八九十百千两半\\d]+(\\.\\d+)?\\s*(${QUANTITY_UNIT})\\s*`)
 // 尾部只剥阿拉伯数字 + 量词；尾部不剥中文数字以保护"五花肉"等以中文数字开头的食材名
@@ -128,8 +128,12 @@ function normalizeIngredient(raw: string): string | null {
   if (first !== undefined) s = first.trim()
   // 去掉括号注释及之后内容（中英文括号都处理）
   s = s.replace(/[（(].*$/, '').trim()
-  // 行首"数字+量词+空格"前缀（"1 袋半成品薯条" → "半成品薯条"）
-  s = s.replace(LEADING_QUANTITY, '').trim()
+  // 行首"数字+量词+空格"前缀。可能有多层（"2cm 两段葱段" → "两段葱段" → "葱段"），循环剥到不变。
+  let prev = ''
+  while (prev !== s) {
+    prev = s
+    s = s.replace(LEADING_QUANTITY, '').trim()
+  }
   // 行尾"数字+量词及之后"（"番茄 2 个 切片" → "番茄"）
   s = s.replace(TRAILING_QUANTITY, '').trim()
   // 反复剥离尾部噪声词，处理"切碎切丁"等组合后缀
