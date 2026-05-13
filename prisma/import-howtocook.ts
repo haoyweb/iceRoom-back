@@ -43,6 +43,40 @@ const STEPS_TO_MINUTES = (steps: number): number => {
   return 50
 }
 
+/**
+ * 分类基础分。值域留在 [25, 65]，配合难度偏移最终落在 [15, 75]，
+ * 与 seed.ts 的种子（70/80/100）刻意错开，确保手工种子优先级始终高于批量导入。
+ */
+const CATEGORY_BASE_SCORE: Record<string, number> = {
+  breakfast: 65,
+  staple: 60,
+  vegetable_dish: 60,
+  meat_dish: 55,
+  soup: 55,
+  aquatic: 45,
+  dessert: 40,
+  drink: 35,
+  'semi-finished': 30,
+  condiment: 25,
+  template: 5,
+}
+
+/** 难度对热度的修正：易做菜谱推荐时加权，难菜降权。 */
+const DIFFICULTY_OFFSET: Record<RecipeDifficulty, number> = {
+  easy: 10,
+  medium: 0,
+  hard: -10,
+}
+
+function calculatePopularity(category: string, difficulty: RecipeDifficulty): number {
+  const base = CATEGORY_BASE_SCORE[category] ?? 40
+  const offset = DIFFICULTY_OFFSET[difficulty]
+  return Math.max(5, Math.min(95, base + offset))
+}
+
+/** 数据来源标识。新增菜谱源时（小红书/下厨房等）请用其各自的源 ID，便于 --reset 按源粒度清理。 */
+const SOURCE_ID = 'howtocook'
+
 // ────────────────────────────────────────────────────────────────────────────
 // 解析器
 // ────────────────────────────────────────────────────────────────────────────
@@ -337,6 +371,20 @@ async function main() {
   // 真入库
   const prisma = new PrismaClient()
   try {
+    // 兼容旧数据：source 字段是 2026-05 加入的，老数据 source=NULL。
+    // 按 popularityScore 区分历史归属：=50 是上一批 HowToCook 数据；其他都是手工种子。
+    const backfilledHowtocook = await prisma.recipeSuggestionRule.updateMany({
+      where: { source: null, popularityScore: 50 },
+      data: { source: SOURCE_ID },
+    })
+    const backfilledSeed = await prisma.recipeSuggestionRule.updateMany({
+      where: { source: null },
+      data: { source: 'seed' },
+    })
+    if (backfilledHowtocook.count > 0 || backfilledSeed.count > 0) {
+      console.log(`\n[backfill] HowToCook 旧批次 ${backfilledHowtocook.count} 条 → source=${SOURCE_ID}；种子 ${backfilledSeed.count} 条 → source='seed'`)
+    }
+
     const data = parsed.map((r) => ({
       name: r.name,
       requiredIngredients: r.ingredients,
@@ -345,16 +393,17 @@ async function main() {
       difficulty: r.difficulty,
       estimatedMinutes: r.estimatedMinutes,
       reasonTemplate: r.reasonHint,
-      popularityScore: 50,
+      popularityScore: calculatePopularity(r.category, r.difficulty),
+      source: SOURCE_ID,
     }))
     const before = await prisma.recipeSuggestionRule.count()
     let resetCount = 0
     if (opts.reset) {
-      // 仅清理 popularityScore=50 的 HowToCook 批次，保留 seed.ts 的种子（100/80/70）。
-      // 这样脚本可重复运行，每次都基于最新词典重新生成数据。
-      const deleted = await prisma.recipeSuggestionRule.deleteMany({ where: { popularityScore: 50 } })
+      // 按 source 字段精确清理本次导入源的旧批次，保留 seed.ts 等其他来源数据。
+      // 这是脚本可重复运行的关键：每次 --reset 都基于最新词典与评分函数重新生成。
+      const deleted = await prisma.recipeSuggestionRule.deleteMany({ where: { source: SOURCE_ID } })
       resetCount = deleted.count
-      console.log(`\n[--reset] 已清理 popularityScore=50 的旧记录 ${resetCount} 条`)
+      console.log(`\n[--reset] 已清理 source=${SOURCE_ID} 的旧记录 ${resetCount} 条`)
     }
     const result = await prisma.recipeSuggestionRule.createMany({ data, skipDuplicates: true })
     const after = await prisma.recipeSuggestionRule.count()
@@ -362,6 +411,18 @@ async function main() {
     console.log(`  数据库原有 ${before} 条${opts.reset ? `（清理 ${resetCount} 条后剩 ${before - resetCount}）` : ''}`)
     console.log(`  本次新写入 ${result.count} 条`)
     console.log(`  当前总数 ${after} 条`)
+
+    // 评分分布速览，便于人眼检查打分是否合理
+    const scoreStats = await prisma.recipeSuggestionRule.groupBy({
+      by: ['popularityScore'],
+      where: { source: SOURCE_ID },
+      _count: true,
+      orderBy: { popularityScore: 'desc' },
+    })
+    console.log(`\n${SOURCE_ID} 来源的 popularityScore 分布：`)
+    for (const row of scoreStats) {
+      console.log(`  ${String(row.popularityScore).padStart(3)} 分: ${row._count} 条`)
+    }
   } finally {
     await prisma.$disconnect()
   }

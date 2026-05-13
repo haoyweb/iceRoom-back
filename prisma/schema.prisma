@@ -112,6 +112,11 @@ model RecipeSuggestionRule {
   estimatedMinutes    Int
   reasonTemplate      String
   popularityScore     Int              @default(0)
+  // 数据来源标识：'seed' = 手工种子，'howtocook' = HowToCook 仓库批量导入。
+  // 用于按来源批量删除/重新导入，是接入新菜谱源（小红书/下厨房等）的基础识别字段。
+  source              String?
   createdAt           DateTime         @default(now())
   updatedAt           DateTime         @updatedAt
+
+  @@index([source])
 }
