@@ -15,6 +15,14 @@ interface FoodWithExpiryInfo extends Pick<FoodItem, 'id' | 'name' | 'expireDate'
 export class RecipeSuggestionService {
   constructor(private readonly prisma: PrismaService) {}
 
+  async findById(id: string) {
+    const rule = await this.prisma.recipeSuggestionRule.findUnique({ where: { id } })
+    if (!rule) {
+      throw new BusinessException(ErrorCode.NOT_FOUND, '菜谱不存在', HttpStatus.NOT_FOUND)
+    }
+    return rule
+  }
+
   async suggest(ingredients: string[]) {
     const normalizedIngredients = new Set(ingredients.map((item) => item.trim()).filter(Boolean))
     const rules = await this.prisma.recipeSuggestionRule.findMany({
