@@ -25,6 +25,7 @@ async function main() {
         reasonTemplate: '可以优先消耗临期的番茄和鸡蛋，做法简单，适合作为今日快手菜。',
         popularityScore: 100,
         source: 'seed',
+        category: 'vegetable_dish',
       },
       {
         name: '香菇青菜',
@@ -36,6 +37,7 @@ async function main() {
         reasonTemplate: '能同时处理临期蔬菜，清淡且制作时间短。',
         popularityScore: 80,
         source: 'seed',
+        category: 'vegetable_dish',
       },
       {
         name: '土豆炖牛肉',
@@ -47,6 +49,7 @@ async function main() {
         reasonTemplate: '适合一次消耗较多食材，适合正餐。',
         popularityScore: 70,
         source: 'seed',
+        category: 'meat_dish',
       },
     ],
     skipDuplicates: true,

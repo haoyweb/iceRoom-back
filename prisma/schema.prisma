@@ -115,6 +115,9 @@ model RecipeSuggestionRule {
   // 数据来源标识：'seed' = 手工种子，'howtocook' = HowToCook 仓库批量导入。
   // 用于按来源批量删除/重新导入，是接入新菜谱源（小红书/下厨房等）的基础识别字段。
   source              String?
+  // 菜系/分类：HowToCook 来源对应仓库目录（meat_dish/vegetable_dish/staple/...），
+  // 种子数据可填 'seed' 或具体类别。前端列表页按这个做 chip 筛选。
+  category            String?
   // 操作步骤数组。HowToCook 的 ## 操作 章节按 1./2./3. 顺序拆分；空数组表示原文无步骤。
   instructions        String[]         @default([])
   // 附加内容 / 小贴士：原文 ## 附加内容 章节中可读性较好的提示文本，过长时会被截断。
@@ -127,4 +130,5 @@ model RecipeSuggestionRule {
   updatedAt           DateTime         @updatedAt
 
   @@index([source])
+  @@index([category])
 }

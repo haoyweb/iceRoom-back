@@ -1,10 +1,13 @@
 import { HttpStatus, Injectable } from '@nestjs/common'
-import type { FoodItem } from '@prisma/client'
+import type { FoodItem, Prisma } from '@prisma/client'
+import { createPageResult } from '@/common/dto/page.dto'
 import { BusinessException } from '@/common/errors/business.exception'
 import { ErrorCode } from '@/common/errors/error-code.enum'
 import type { FoodExpiryLevel } from '@/common/utils/expiry'
 import { getExpiryScore, withExpiryInfo } from '@/common/utils/expiry'
 import { PrismaService } from '@/database/prisma.service'
+import { RecipeOrderBy } from './dto/recipe-list-query.dto'
+import type { RecipeListQueryDto } from './dto/recipe-list-query.dto'
 
 interface FoodWithExpiryInfo extends Pick<FoodItem, 'id' | 'name' | 'expireDate'> {
   daysToExpire: number
@@ -14,6 +17,48 @@ interface FoodWithExpiryInfo extends Pick<FoodItem, 'id' | 'name' | 'expireDate'
 @Injectable()
 export class RecipeSuggestionService {
   constructor(private readonly prisma: PrismaService) {}
+
+  async list(query: RecipeListQueryDto) {
+    const page = query.page ?? 1
+    const pageSize = query.pageSize ?? 20
+    const orderByKey = query.orderBy ?? RecipeOrderBy.popular
+
+    const where: Prisma.RecipeSuggestionRuleWhereInput = {}
+    if (query.category) where.category = query.category
+    if (query.difficulty) where.difficulty = query.difficulty
+    if (query.keyword) where.name = { contains: query.keyword, mode: 'insensitive' }
+
+    const orderBy: Prisma.RecipeSuggestionRuleOrderByWithRelationInput[] =
+      orderByKey === RecipeOrderBy.fast
+        ? [{ estimatedMinutes: 'asc' }, { popularityScore: 'desc' }]
+        : orderByKey === RecipeOrderBy.newest
+          ? [{ createdAt: 'desc' }]
+          : [{ popularityScore: 'desc' }, { estimatedMinutes: 'asc' }]
+
+    const [list, total] = await Promise.all([
+      this.prisma.recipeSuggestionRule.findMany({
+        where,
+        orderBy,
+        skip: (page - 1) * pageSize,
+        take: pageSize,
+        // 列表展示用的字段：故意不返回 instructions / tips / sourceRefUrl / reasonTemplate，
+        // 让 payload 保持精简。详情页通过 :id 拿完整数据。
+        select: {
+          id: true,
+          name: true,
+          difficulty: true,
+          estimatedMinutes: true,
+          imageUrl: true,
+          popularityScore: true,
+          category: true,
+          requiredIngredients: true,
+        },
+      }),
+      this.prisma.recipeSuggestionRule.count({ where }),
+    ])
+
+    return createPageResult(list, total, page, pageSize)
+  }
 
   async findById(id: string) {
     const rule = await this.prisma.recipeSuggestionRule.findUnique({ where: { id } })

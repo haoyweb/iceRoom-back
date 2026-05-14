@@ -515,6 +515,7 @@ async function main() {
       reasonTemplate: r.reasonHint,
       popularityScore: calculatePopularity(r.category, r.difficulty),
       source: SOURCE_ID,
+      category: r.category,
       instructions: r.instructions,
       tips: r.tips,
       imageUrl: r.imageUrl,

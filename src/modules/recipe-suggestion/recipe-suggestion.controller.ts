@@ -1,5 +1,6 @@
 import { Body, Controller, Get, Param, Post, Query } from '@nestjs/common'
 import { ApiOkResponse, ApiParam, ApiTags } from '@nestjs/swagger'
+import { RecipeListQueryDto } from './dto/recipe-list-query.dto'
 import { RecipeSuggestionByFridgeDto } from './dto/recipe-suggestion-by-fridge.dto'
 import { RecipeSuggestionQueryDto } from './dto/recipe-suggestion-query.dto'
 import { RecipeSuggestionService } from './recipe-suggestion.service'
@@ -8,6 +9,12 @@ import { RecipeSuggestionService } from './recipe-suggestion.service'
 @Controller('recipe-suggestions')
 export class RecipeSuggestionController {
   constructor(private readonly recipeSuggestionService: RecipeSuggestionService) {}
+
+  @Get()
+  @ApiOkResponse({ description: 'Paginated recipe list with filters (category/difficulty/keyword) and sort.' })
+  list(@Query() query: RecipeListQueryDto) {
+    return this.recipeSuggestionService.list(query)
+  }
 
   @Post()
   @ApiOkResponse({ description: 'Suggest recipes by available ingredients.' })
