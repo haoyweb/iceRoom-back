@@ -115,6 +115,14 @@ model RecipeSuggestionRule {
   // 数据来源标识：'seed' = 手工种子，'howtocook' = HowToCook 仓库批量导入。
   // 用于按来源批量删除/重新导入，是接入新菜谱源（小红书/下厨房等）的基础识别字段。
   source              String?
+  // 操作步骤数组。HowToCook 的 ## 操作 章节按 1./2./3. 顺序拆分；空数组表示原文无步骤。
+  instructions        String[]         @default([])
+  // 附加内容 / 小贴士：原文 ## 附加内容 章节中可读性较好的提示文本，过长时会被截断。
+  tips                String?
+  // 菜谱配图 URL。HowToCook 仓库内是 ./xxx.jpg 相对路径，入库时转成 GitHub raw 直链。
+  imageUrl            String?
+  // 原文链接，方便用户查看完整教程或排查脏数据。HowToCook 用 GitHub blob URL。
+  sourceRefUrl        String?
   createdAt           DateTime         @default(now())
   updatedAt           DateTime         @updatedAt
 

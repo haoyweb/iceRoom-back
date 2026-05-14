@@ -92,7 +92,112 @@ interface ParsedRecipe {
   category: string
   filePath: string
   warnings: string[]
+  instructions: string[]
+  tips: string | null
+  imageUrl: string | null
+  sourceRefUrl: string
 }
+
+const HOWTOCOOK_RAW_BASE = 'https://raw.githubusercontent.com/Anduin2017/HowToCook/master/'
+const HOWTOCOOK_BLOB_BASE = 'https://github.com/Anduin2017/HowToCook/blob/master/'
+
+/**
+ * 从 markdown 行数组中抽取 "## 操作" 章节下的所有步骤。
+ *
+ * 处理细节：
+ * - 一个步骤可能跨多行（续行 + 缩进 bullet 子项），都拼到当前步骤里
+ * - 部分菜谱用 "### 步骤名" 分组，每组下重新计数 1./2./3.（如「炸薯条」「巴斯克芝士蛋糕」）
+ *   策略：把子标题作为前缀，拼到下一步开头，避免步骤丢上下文
+ * - 步骤里的 markdown 内链 [文字](./xxx.md) 会被剥成纯文字
+ */
+function extractInstructions(lines: string[]): string[] {
+  const operationStart = lines.findIndex((l) => /^##\s*操作/.test(l))
+  if (operationStart < 0) return []
+  let operationEnd = lines.findIndex((l, i) => i > operationStart && /^##\s/.test(l))
+  if (operationEnd < 0) operationEnd = lines.length
+
+  const instructions: string[] = []
+  let current: string | null = null
+  let subheading: string | null = null
+
+  const commit = () => {
+    if (current === null) return
+    let text = current.trim().replace(/\s+/g, ' ')
+    // 去 markdown 内链 [文字](url) → 文字
+    text = text.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    if (text) instructions.push(text)
+    current = null
+  }
+
+  for (let i = operationStart + 1; i < operationEnd; i += 1) {
+    const line = lines[i]
+    if (!line) {
+      if (current !== null) current += '' // 空行不打断当前步骤，但保留缓冲
+      continue
+    }
+    if (/^###?\s+/.test(line)) {
+      commit()
+      subheading = line.replace(/^#+\s+/, '').trim() || null
+      continue
+    }
+    const numbered = line.match(/^\s*\d+\.\s+(.*)$/)
+    if (numbered) {
+      commit()
+      const head = subheading ? `${subheading}：` : ''
+      current = head + (numbered[1] ?? '')
+      subheading = null
+      continue
+    }
+    if (current === null) continue
+    const trimmed = line.trim()
+    if (!trimmed) continue
+    current += ' ' + trimmed.replace(/^[-*+]\s*/, '')
+  }
+  commit()
+  return instructions
+}
+
+/** 抽取 "## 附加内容" 章节下可读的 bullet 文本，拼成多行字符串。截到 500 字符。 */
+function extractTips(lines: string[]): string | null {
+  const extraStart = lines.findIndex((l) => /^##\s*附加内容/.test(l))
+  if (extraStart < 0) return null
+  const bullets: string[] = []
+  for (let i = extraStart + 1; i < lines.length; i += 1) {
+    const trimmed = lines[i]?.trim()
+    if (!trimmed) continue
+    if (/^##\s/.test(trimmed)) break
+    // HowToCook 仓库统一的尾部声明
+    if (/^如果您遵循本指南/.test(trimmed)) break
+    const m = trimmed.match(/^[*\-+]\s+(.*)$/)
+    if (!m) continue
+    const text = (m[1] ?? '').replace(/\[([^\]]+)\]\([^)]+\)/g, '$1').trim()
+    if (!text) continue
+    if (/^https?:\/\//.test(text)) continue
+    if (/^!\[/.test(text)) continue
+    bullets.push(text)
+  }
+  if (bullets.length === 0) return null
+  return bullets.join('\n').slice(0, 500)
+}
+
+/** 找 markdown 里的第一张图，转成 HowToCook GitHub raw 直链。 */
+function extractImageUrl(lines: string[], relPath: string): string | null {
+  for (const line of lines) {
+    const m = line.match(/!\[[^\]]*\]\(([^)]+\.(?:jpg|jpeg|png|webp))\)/i)
+    if (!m || !m[1]) continue
+    let imgPath = m[1]
+    if (imgPath.startsWith('http://') || imgPath.startsWith('https://')) return imgPath
+    if (imgPath.startsWith('./')) imgPath = imgPath.slice(2)
+    if (imgPath.startsWith('/')) imgPath = imgPath.slice(1)
+    const dir = relPath.replace(/\\/g, '/').split('/').slice(0, -1).join('/')
+    const fullPath = dir ? `${dir}/${imgPath}` : imgPath
+    return HOWTOCOOK_RAW_BASE + fullPath
+  }
+  return null
+}
+
+const deriveSourceRefUrl = (relPath: string): string =>
+  HOWTOCOOK_BLOB_BASE + relPath.replace(/\\/g, '/')
 
 // 量词集合：用于去除"数字+量词"前后缀。集中定义便于将来增减（如新增"袋装"、"盒装"等）。
 const QUANTITY_UNIT = '克|g|kg|ml|毫升|升|斤|两|个|只|片|块|根|颗|瓣|条|包|盒|袋|份|大勺|小勺|茶匙|汤匙|杯|碗|cm|mm|厘米|毫米|寸|段|节|把|捧|撮|束'
@@ -248,6 +353,10 @@ function parseRecipe(filePath: string, content: string, category: string): Parse
     category,
     filePath,
     warnings,
+    instructions: extractInstructions(lines),
+    tips: extractTips(lines),
+    imageUrl: extractImageUrl(lines, filePath),
+    sourceRefUrl: deriveSourceRefUrl(filePath),
   }
 }
 
@@ -359,6 +468,13 @@ async function main() {
     console.log(`  - ${r.name} [${r.category}, ${r.difficulty}, ${r.estimatedMinutes}min]`)
     console.log(`      ingredients: ${r.ingredients.slice(0, 8).join(', ')}${r.ingredients.length > 8 ? '...' : ''}`)
     console.log(`      reason: ${r.reasonHint}`)
+    console.log(`      image: ${r.imageUrl ?? '（无）'}`)
+    console.log(`      instructions (${r.instructions.length} 步):`)
+    for (const [idx, step] of r.instructions.slice(0, 3).entries()) {
+      console.log(`        ${idx + 1}. ${step.slice(0, 80)}${step.length > 80 ? '...' : ''}`)
+    }
+    if (r.instructions.length > 3) console.log(`        ...(共 ${r.instructions.length} 步)`)
+    if (r.tips) console.log(`      tips: ${r.tips.split('\n').slice(0, 2).join(' / ')}${r.tips.split('\n').length > 2 ? ' ...' : ''}`)
   }
 
   if (failed.length > 0) {
@@ -399,6 +515,10 @@ async function main() {
       reasonTemplate: r.reasonHint,
       popularityScore: calculatePopularity(r.category, r.difficulty),
       source: SOURCE_ID,
+      instructions: r.instructions,
+      tips: r.tips,
+      imageUrl: r.imageUrl,
+      sourceRefUrl: r.sourceRefUrl,
     }))
     const before = await prisma.recipeSuggestionRule.count()
     let resetCount = 0
