@@ -42,11 +42,19 @@ enum ExpireDateSource {
 }
 
 model User {
-  id        String   @id @default(cuid())
-  nickname  String
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-  fridges   Fridge[]
+  id           String   @id @default(cuid())
+  // 登录账号：3-32 位字母/数字/下划线，全库唯一。
+  // 强校验放在 DTO 层（class-validator），DB 仅靠 @unique 兜住竞态/绕过 API 的写入。
+  username     String   @unique
+  // bcryptjs 哈希值（含 cost 头），不存原密码。比对走 bcrypt.compare，rounds 由配置控制。
+  passwordHash String
+  // 展示用昵称，注册时可选；为空时前端用 username 兜底渲染。
+  nickname     String?
+  // 头像 URL（占位，未来接 R2 上传）。MVP 阶段允许为空。
+  avatar       String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  fridges      Fridge[]
 }
 
 model Fridge {
@@ -120,10 +128,23 @@ model RecipeSuggestionRule {
   category            String?
   // 操作步骤数组。HowToCook 的 ## 操作 章节按 1./2./3. 顺序拆分；空数组表示原文无步骤。
   instructions        String[]         @default([])
+  // 步骤过程图。key 是 stepIndex（字符串化），value 是该步骤对应的 R2 图 URL 数组。
+  // 形如 { "3": ["https://pub-xxx.r2.dev/recipes/.../焯水.jpg"], "9": [...] }。
+  // 仅存有图的步骤，省存储；缺失的步骤前端按"无图"渲染。
+  stepImages          Json?
+  // 用料计算表。从原文 ## 计算 章节解析得来，提供定量配比（如「白糖 10 克」「可乐 500ml」）。
+  // 结构：{ description: string, items: [{ name: string, amount: string }] }。
+  // null 表示原文没有计算章节，前端隐藏该卡片。
+  portions            Json?
   // 附加内容 / 小贴士：原文 ## 附加内容 章节中可读性较好的提示文本，过长时会被截断。
   tips                String?
-  // 菜谱配图 URL。HowToCook 仓库内是 ./xxx.jpg 相对路径，入库时转成 GitHub raw 直链。
+  // 菜谱配图 URL。导入时下载原图上传到自有对象存储（R2），数据库存的是 R2 公开 URL。
+  // 失败的菜谱此字段为 null，前端走 placeholder fallback。
   imageUrl            String?
+  // 图片源头 URL。HowToCook 来源是 raw.githubusercontent.com 直链；保留它做两件事：
+  //   1. 溯源/审计（管理后台能查图片原始出处）
+  //   2. fallback——当 R2 不可用或 imageUrl 被误删时还能从源头补救
+  imageSourceUrl      String?
   // 原文链接，方便用户查看完整教程或排查脏数据。HowToCook 用 GitHub blob URL。
   sourceRefUrl        String?
   createdAt           DateTime         @default(now())

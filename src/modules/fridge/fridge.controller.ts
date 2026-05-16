@@ -1,8 +1,8 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common'
+import { Body, Controller, Delete, Get, Param, Patch, Post } from '@nestjs/common'
 import { ApiCreatedResponse, ApiOkResponse, ApiParam, ApiTags } from '@nestjs/swagger'
+import { CurrentUser } from '@/common/decorators/current-user.decorator'
 import { CreateFridgeDto } from './dto/create-fridge.dto'
 import { CreateStorageShelfDto } from './dto/create-storage-shelf.dto'
-import { ListFridgeDto } from './dto/list-fridge.dto'
 import { UpdateFridgeDto } from './dto/update-fridge.dto'
 import { UpdateStorageShelfDto } from './dto/update-storage-shelf.dto'
 import { FridgeService } from './fridge.service'
@@ -16,68 +16,68 @@ export class FridgeController {
   constructor(private readonly fridgeService: FridgeService) {}
 
   @Get()
-  @ApiOkResponse({ description: 'List fridges with shelves.' })
-  list(@Query() query: ListFridgeDto) {
-    return this.fridgeService.list(query)
+  @ApiOkResponse({ description: 'List fridges of current user with shelves.' })
+  list(@CurrentUser('id') userId: string) {
+    return this.fridgeService.list(userId)
   }
 
   @Post()
-  @ApiCreatedResponse({ description: 'Create fridge.' })
-  create(@Body() data: CreateFridgeDto) {
-    return this.fridgeService.create(data)
+  @ApiCreatedResponse({ description: 'Create fridge for current user.' })
+  create(@Body() data: CreateFridgeDto, @CurrentUser('id') userId: string) {
+    return this.fridgeService.create(data, userId)
   }
 
   @Get(':id')
   @ApiOkResponse({ description: 'Get fridge detail with shelves.' })
-  getById(@Param('id') id: string) {
-    return this.fridgeService.getById(id)
+  getById(@Param('id') id: string, @CurrentUser('id') userId: string) {
+    return this.fridgeService.getById(id, userId)
   }
 
   @Patch(':id')
   @ApiOkResponse({ description: 'Update fridge.' })
-  update(@Param('id') id: string, @Body() data: UpdateFridgeDto) {
-    return this.fridgeService.update(id, data)
+  update(@Param('id') id: string, @Body() data: UpdateFridgeDto, @CurrentUser('id') userId: string) {
+    return this.fridgeService.update(id, data, userId)
   }
 
   @Delete(':id')
   @ApiOkResponse({ description: 'Delete fridge.' })
-  remove(@Param('id') id: string) {
-    return this.fridgeService.remove(id)
+  remove(@Param('id') id: string, @CurrentUser('id') userId: string) {
+    return this.fridgeService.remove(id, userId)
   }
 
   @Get(':fridgeId/shelves')
   @ApiOkResponse({ description: 'List fridge shelves.' })
-  listShelves(@Param('fridgeId') fridgeId: string) {
-    return this.fridgeService.listShelves(fridgeId)
+  listShelves(@Param('fridgeId') fridgeId: string, @CurrentUser('id') userId: string) {
+    return this.fridgeService.listShelves(fridgeId, userId)
   }
 
   @Post(':fridgeId/shelves')
   @ApiCreatedResponse({ description: 'Create fridge shelf.' })
-  createShelf(@Param('fridgeId') fridgeId: string, @Body() data: CreateStorageShelfDto) {
-    return this.fridgeService.createShelf(fridgeId, data)
+  createShelf(@Param('fridgeId') fridgeId: string, @Body() data: CreateStorageShelfDto, @CurrentUser('id') userId: string) {
+    return this.fridgeService.createShelf(fridgeId, data, userId)
   }
 
   @Post(':fridgeId/shelves/reset-defaults')
   @ApiOkResponse({ description: 'Create missing default shelves for fridge.' })
-  resetDefaultShelves(@Param('fridgeId') fridgeId: string) {
-    return this.fridgeService.resetDefaultShelves(fridgeId)
+  resetDefaultShelves(@Param('fridgeId') fridgeId: string, @CurrentUser('id') userId: string) {
+    return this.fridgeService.resetDefaultShelves(fridgeId, userId)
   }
 
   @Get(':fridgeId/shelves/:shelfId')
   @ApiOkResponse({ description: 'Get fridge shelf detail.' })
-  getShelf(@Param('fridgeId') fridgeId: string, @Param('shelfId') shelfId: string) {
-    return this.fridgeService.getShelf(fridgeId, shelfId)
+  getShelf(@Param('fridgeId') fridgeId: string, @Param('shelfId') shelfId: string, @CurrentUser('id') userId: string) {
+    return this.fridgeService.getShelf(fridgeId, shelfId, userId)
   }
 
   @Patch(':fridgeId/shelves/:shelfId')
   @ApiOkResponse({ description: 'Update fridge shelf.' })
-  updateShelf(@Param('fridgeId') fridgeId: string, @Param('shelfId') shelfId: string, @Body() data: UpdateStorageShelfDto) {
-    return this.fridgeService.updateShelf(fridgeId, shelfId, data)
+  updateShelf(@Param('fridgeId') fridgeId: string, @Param('shelfId') shelfId: string, @Body() data: UpdateStorageShelfDto, @CurrentUser('id') userId: string) {
+    return this.fridgeService.updateShelf(fridgeId, shelfId, data, userId)
   }
 
   @Delete(':fridgeId/shelves/:shelfId')
   @ApiOkResponse({ description: 'Delete fridge shelf.' })
-  removeShelf(@Param('fridgeId') fridgeId: string, @Param('shelfId') shelfId: string) {
-    return this.fridgeService.removeShelf(fridgeId, shelfId)
+  removeShelf(@Param('fridgeId') fridgeId: string, @Param('shelfId') shelfId: string, @CurrentUser('id') userId: string) {
+    return this.fridgeService.removeShelf(fridgeId, shelfId, userId)
   }
 }

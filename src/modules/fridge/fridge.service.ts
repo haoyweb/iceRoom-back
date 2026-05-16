@@ -6,17 +6,25 @@ import { PrismaService } from '@/database/prisma.service'
 import { DEFAULT_STORAGE_SHELVES } from './fridge.constants'
 import type { CreateFridgeDto } from './dto/create-fridge.dto'
 import type { CreateStorageShelfDto } from './dto/create-storage-shelf.dto'
-import type { ListFridgeDto } from './dto/list-fridge.dto'
 import type { UpdateFridgeDto } from './dto/update-fridge.dto'
 import type { UpdateStorageShelfDto } from './dto/update-storage-shelf.dto'
 
+/**
+ * 所有写/读冰箱与层位的接口现在都要求 userId（来自 JWT @CurrentUser）。
+ *
+ * 设计原则：
+ *  - list/create 直接接 userId 参数（service 层签名清晰，不依赖请求上下文）
+ *  - update/remove/listShelves/... 内部统一过 ensureFridgeOwnedByUser，
+ *    拒绝跨用户访问 → 抛 FORBIDDEN，前端 toast 「无权访问」
+ *  - ensureFridgeOwnedByUser 是公开方法（exports 给 FoodModule / RecipeSuggestionModule 用）
+ */
 @Injectable()
 export class FridgeService {
   constructor(private readonly prisma: PrismaService) {}
 
-  list(query: ListFridgeDto = {}) {
+  list(userId: string) {
     return this.prisma.fridge.findMany({
-      where: query.userId ? { userId: query.userId } : undefined,
+      where: { userId },
       include: {
         shelves: {
           orderBy: [{ area: 'asc' }, { sort: 'asc' }],
@@ -26,11 +34,9 @@ export class FridgeService {
     })
   }
 
-  async create(data: CreateFridgeDto) {
-    await this.ensureUserExists(data.userId)
-
+  async create(data: CreateFridgeDto, userId: string) {
     return this.prisma.$transaction(async (tx) => {
-      const fridge = await tx.fridge.create({ data })
+      const fridge = await tx.fridge.create({ data: { ...data, userId } })
       await this.createMissingDefaultShelves(fridge.id, tx)
 
       return tx.fridge.findUniqueOrThrow({
@@ -44,7 +50,8 @@ export class FridgeService {
     })
   }
 
-  async getById(id: string) {
+  async getById(id: string, userId: string) {
+    await this.ensureFridgeOwnedByUser(id, userId)
     const fridge = await this.prisma.fridge.findUnique({
       where: { id },
       include: {
@@ -61,8 +68,8 @@ export class FridgeService {
     return fridge
   }
 
-  async update(id: string, data: UpdateFridgeDto) {
-    await this.ensureFridgeExists(id)
+  async update(id: string, data: UpdateFridgeDto, userId: string) {
+    await this.ensureFridgeOwnedByUser(id, userId)
 
     return this.prisma.fridge.update({
       where: { id },
@@ -70,16 +77,16 @@ export class FridgeService {
     })
   }
 
-  async remove(id: string) {
-    await this.ensureFridgeExists(id)
+  async remove(id: string, userId: string) {
+    await this.ensureFridgeOwnedByUser(id, userId)
 
     return this.prisma.fridge.delete({
       where: { id },
     })
   }
 
-  async listShelves(fridgeId: string) {
-    await this.ensureFridgeExists(fridgeId)
+  async listShelves(fridgeId: string, userId: string) {
+    await this.ensureFridgeOwnedByUser(fridgeId, userId)
 
     return this.prisma.storageShelf.findMany({
       where: { fridgeId },
@@ -87,8 +94,8 @@ export class FridgeService {
     })
   }
 
-  async createShelf(fridgeId: string, data: CreateStorageShelfDto) {
-    await this.ensureFridgeExists(fridgeId)
+  async createShelf(fridgeId: string, data: CreateStorageShelfDto, userId: string) {
+    await this.ensureFridgeOwnedByUser(fridgeId, userId)
 
     try {
       return await this.prisma.storageShelf.create({
@@ -104,8 +111,8 @@ export class FridgeService {
     }
   }
 
-  async resetDefaultShelves(fridgeId: string) {
-    await this.ensureFridgeExists(fridgeId)
+  async resetDefaultShelves(fridgeId: string, userId: string) {
+    await this.ensureFridgeOwnedByUser(fridgeId, userId)
 
     return this.prisma.$transaction(async (tx) => {
       await this.createMissingDefaultShelves(fridgeId, tx)
@@ -117,12 +124,13 @@ export class FridgeService {
     })
   }
 
-  async getShelf(fridgeId: string, shelfId: string) {
-    await this.ensureFridgeExists(fridgeId)
+  async getShelf(fridgeId: string, shelfId: string, userId: string) {
+    await this.ensureFridgeOwnedByUser(fridgeId, userId)
     return this.ensureShelfBelongsToFridge(fridgeId, shelfId)
   }
 
-  async updateShelf(fridgeId: string, shelfId: string, data: UpdateStorageShelfDto) {
+  async updateShelf(fridgeId: string, shelfId: string, data: UpdateStorageShelfDto, userId: string) {
+    await this.ensureFridgeOwnedByUser(fridgeId, userId)
     await this.ensureShelfBelongsToFridge(fridgeId, shelfId)
 
     try {
@@ -137,7 +145,8 @@ export class FridgeService {
     }
   }
 
-  async removeShelf(fridgeId: string, shelfId: string) {
+  async removeShelf(fridgeId: string, shelfId: string, userId: string) {
+    await this.ensureFridgeOwnedByUser(fridgeId, userId)
     await this.ensureShelfBelongsToFridge(fridgeId, shelfId)
 
     const foodCount = await this.prisma.foodItem.count({
@@ -153,14 +162,24 @@ export class FridgeService {
     })
   }
 
-  async ensureFridgeExists(id: string) {
+  /**
+   * 鉴权关键 utility：冰箱不存在抛 404，不属于当前用户抛 403。
+   * 公开给 FoodService / RecipeSuggestionService 使用（FridgeModule.exports 中暴露 FridgeService）。
+   *
+   * 不区分「不存在」和「无权访问」对外返回——避免被穷举 fridgeId 试探别人的资产，
+   * 但 status code 还是按语义分（404 vs 403），方便日志排查。
+   */
+  async ensureFridgeOwnedByUser(fridgeId: string, userId: string) {
     const fridge = await this.prisma.fridge.findUnique({
-      where: { id },
-      select: { id: true },
+      where: { id: fridgeId },
+      select: { id: true, userId: true },
     })
 
     if (!fridge) {
       throw new BusinessException(ErrorCode.FRIDGE_NOT_FOUND, '冰箱不存在', HttpStatus.NOT_FOUND)
+    }
+    if (fridge.userId !== userId) {
+      throw new BusinessException(ErrorCode.FORBIDDEN, '无权访问该冰箱', HttpStatus.FORBIDDEN)
     }
   }
 
@@ -192,17 +211,6 @@ export class FridgeService {
       data: missingShelves.map((shelf) => ({ ...shelf, fridgeId })),
       skipDuplicates: true,
     })
-  }
-
-  private async ensureUserExists(userId: string) {
-    const user = await this.prisma.user.findUnique({
-      where: { id: userId },
-      select: { id: true },
-    })
-
-    if (!user) {
-      throw new BusinessException(ErrorCode.USER_NOT_FOUND, '用户不存在', HttpStatus.NOT_FOUND)
-    }
   }
 
   private throwConflictIfUniqueShelf(error: unknown) {

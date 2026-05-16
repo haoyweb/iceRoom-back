@@ -5,11 +5,12 @@
  * 默认从本地缓存目录 .cache/howtocook-data/ 读取（先 `git clone --depth 1` 一次即可）。
  *
  * 用法：
- *   pnpm ts-node prisma/import-howtocook.ts                       # dry-run，只打印统计与样本
- *   pnpm ts-node prisma/import-howtocook.ts --confirm              # 真入库（createMany + skipDuplicates）
- *   pnpm ts-node prisma/import-howtocook.ts --confirm --reset      # 先删 popularityScore=50 的旧批次再重插
- *   pnpm ts-node prisma/import-howtocook.ts --source <dir>         # 指定数据源目录
- *   pnpm ts-node prisma/import-howtocook.ts --limit 50             # 只处理前 N 条
+ *   pnpm ts-node prisma/import-howtocook.ts                                       # dry-run，只打印统计与样本
+ *   pnpm ts-node prisma/import-howtocook.ts --confirm                              # 真入库（createMany + skipDuplicates）
+ *   pnpm ts-node prisma/import-howtocook.ts --confirm --reset                      # 先删 source=howtocook 的旧批次再重插
+ *   pnpm ts-node prisma/import-howtocook.ts --confirm --migrate-images             # 入库后顺便把图迁移到 R2
+ *   pnpm ts-node prisma/import-howtocook.ts --source <dir>                         # 指定数据源目录
+ *   pnpm ts-node prisma/import-howtocook.ts --limit 50                             # 只处理前 N 条
  *
  * 解析策略：HowToCook 每篇菜谱遵循 6 段式 markdown 模板，提取
  *   - 标题（去掉"的做法"后缀）
@@ -18,10 +19,11 @@
  *   - 操作步骤数 → estimatedMinutes 估算
  */
 
+import 'dotenv/config'
 import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { basename, extname, join, relative } from 'node:path'
 import { argv, exit } from 'node:process'
-import { PrismaClient, RecipeDifficulty } from '@prisma/client'
+import { Prisma, PrismaClient, RecipeDifficulty } from '@prisma/client'
 import {
   INGREDIENT_ANY_SUBSECTION,
   INGREDIENT_TAIL_NOISE,
@@ -29,6 +31,8 @@ import {
   SYNONYMS,
   TOOL_BLACKLIST,
 } from './import-helpers/recipe-dictionaries'
+import { createR2Bridge } from './import-helpers/image-storage'
+import { migrateRawImagesToR2 } from './import-helpers/migrate-images'
 
 const STAR_TO_DIFFICULTY = (stars: number): RecipeDifficulty => {
   if (stars <= 1) return RecipeDifficulty.easy
@@ -96,10 +100,33 @@ interface ParsedRecipe {
   tips: string | null
   imageUrl: string | null
   sourceRefUrl: string
+  /** "## 计算" 章节解析结果；null 表示原文没有计算章节。 */
+  portions: { description: string; items: Array<{ name: string; amount: string }> } | null
+  /**
+   * 步骤过程图。key 是 instructions 数组的下标（字符串化），value 是图的 raw URL 数组。
+   * 空对象表示原文步骤间没有插图。
+   */
+  stepImages: Record<string, string[]>
 }
 
 const HOWTOCOOK_RAW_BASE = 'https://raw.githubusercontent.com/Anduin2017/HowToCook/master/'
 const HOWTOCOOK_BLOB_BASE = 'https://github.com/Anduin2017/HowToCook/blob/master/'
+
+/**
+ * 把 markdown 里 `![](xxx)` 的相对路径解析成 HowToCook GitHub raw 直链。
+ * 已是完整 URL 时原样返回。
+ *
+ * 抽出来给 extractImageUrl / extractStepImages 复用，避免两份"./ 剥前缀 + 拼 raw base"逻辑分叉。
+ */
+function resolveImageUrl(imgPath: string, relPath: string): string {
+  if (imgPath.startsWith('http://') || imgPath.startsWith('https://')) return imgPath
+  let p = imgPath
+  if (p.startsWith('./')) p = p.slice(2)
+  if (p.startsWith('/')) p = p.slice(1)
+  const dir = relPath.replace(/\\/g, '/').split('/').slice(0, -1).join('/')
+  const fullPath = dir ? `${dir}/${p}` : p
+  return HOWTOCOOK_RAW_BASE + fullPath
+}
 
 /**
  * 从 markdown 行数组中抽取 "## 操作" 章节下的所有步骤。
@@ -109,6 +136,8 @@ const HOWTOCOOK_BLOB_BASE = 'https://github.com/Anduin2017/HowToCook/blob/master
  * - 部分菜谱用 "### 步骤名" 分组，每组下重新计数 1./2./3.（如「炸薯条」「巴斯克芝士蛋糕」）
  *   策略：把子标题作为前缀，拼到下一步开头，避免步骤丢上下文
  * - 步骤里的 markdown 内链 [文字](./xxx.md) 会被剥成纯文字
+ * - `![alt](./xxx.jpg)` 步骤间嵌入的过程图行**整行跳过**，不污染步骤文本；
+ *   这些图由 extractStepImages 单独归类。
  */
 function extractInstructions(lines: string[]): string[] {
   const operationStart = lines.findIndex((l) => /^##\s*操作/.test(l))
@@ -140,6 +169,8 @@ function extractInstructions(lines: string[]): string[] {
       subheading = line.replace(/^#+\s+/, '').trim() || null
       continue
     }
+    // 整行只含图片引用 → 跳过，由 extractStepImages 处理；否则会被错误地拼到上一步
+    if (/^\s*!\[[^\]]*\]\([^)]+\)\s*$/.test(line)) continue
     const numbered = line.match(/^\s*\d+\.\s+(.*)$/)
     if (numbered) {
       commit()
@@ -155,6 +186,147 @@ function extractInstructions(lines: string[]): string[] {
   }
   commit()
   return instructions
+}
+
+/**
+ * 扫描 "## 操作" 章节内嵌的图片，按"扁平步骤序号"归类。
+ *
+ * 为什么 key 用扁平序号（0-based 字符串）而不是原文 "1./2./3."：
+ *   HowToCook 有些菜谱用 "### 子步骤名" 分组，每组重新计数 1./2./3.（炸薯条、巴斯克芝士蛋糕）。
+ *   extractInstructions 输出的是**扁平数组**（多个组拼成一个长数组），所以这里也用同样的扁平计数器，
+ *   保证 stepImages[idx] 跟 instructions[idx] 严格对齐，前端可以直接 `instructions[i] + stepImages[String(i)]`。
+ *
+ * heroUrl：封面图 URL（来自 extractImageUrl）。如果某步骤的图正好是封面图，跳过（避免重复展示）。
+ *
+ * 返回值结构：{ "3": ["https://...焯水.jpg"], "9": ["https://...细丝.jpg"] }
+ * 步骤无图 → 该 key 不出现（前端按"无图"渲染）；返回空对象表示整篇都没图。
+ */
+function extractStepImages(
+  lines: string[],
+  relPath: string,
+  heroUrl: string | null,
+): Record<string, string[]> {
+  const operationStart = lines.findIndex((l) => /^##\s*操作/.test(l))
+  if (operationStart < 0) return {}
+  let operationEnd = lines.findIndex((l, i) => i > operationStart && /^##\s/.test(l))
+  if (operationEnd < 0) operationEnd = lines.length
+
+  const result: Record<string, string[]> = {}
+  let flatIdx = -1 // 还没遇到任何 \d+. 步骤前，图片不归类（避免把章节头部插图当作"第 -1 步图"）
+
+  for (let i = operationStart + 1; i < operationEnd; i += 1) {
+    const line = lines[i]
+    if (!line) continue
+    // 子标题不影响 flatIdx 计数（保持与 extractInstructions 的扁平化策略一致）
+    if (/^###?\s+/.test(line)) continue
+    if (/^\s*\d+\.\s+/.test(line)) {
+      flatIdx += 1
+      continue
+    }
+    // 在当前行中找所有图片（一行可能多张）
+    const matches = [...line.matchAll(/!\[[^\]]*\]\(([^)]+\.(?:jpg|jpeg|png|webp))\)/gi)]
+    if (matches.length === 0) continue
+    if (flatIdx < 0) continue
+    const stepKey = String(flatIdx)
+    for (const m of matches) {
+      const imgPath = m[1]
+      if (!imgPath) continue
+      const url = resolveImageUrl(imgPath, relPath)
+      if (heroUrl && url === heroUrl) continue
+      if (!result[stepKey]) result[stepKey] = []
+      // 单步重复同一张图也去掉
+      if (!result[stepKey].includes(url)) result[stepKey].push(url)
+    }
+  }
+  return result
+}
+
+/**
+ * 解析 "## 计算" 章节，提取定量配比。
+ *
+ * HowToCook 这个章节有三种主要写法（采样观察）：
+ *   1. 「按照 1 盘的份量：」 + bullet 列表（可乐鸡翅）
+ *   2. 「每份：」 + bullet 列表（凉拌鸡丝）
+ *   3. 「总量（按每份）：」 + 一段说明文字 + bullet 列表（奶油蘑菇汤）
+ *   也有少数把份量信息直接放标题（**主菜**）+ 再下一行 bullet。
+ *
+ * 策略：
+ *   - description：章节内**第一个**非 bullet、非粗体子标题的文本行，去掉结尾冒号
+ *   - items：所有 bullet 项，按"第一个空格"拆 name/amount；无空格则全部当 name
+ *
+ * 没有 bullet 项时返回 null —— 前端隐藏整张计算卡片，比展示空列表更友好。
+ */
+function extractPortions(lines: string[]): {
+  description: string
+  items: Array<{ name: string; amount: string }>
+} | null {
+  const start = lines.findIndex((l) => /^##\s*计算/.test(l))
+  if (start < 0) return null
+  let end = lines.findIndex((l, i) => i > start && /^##\s/.test(l))
+  if (end < 0) end = lines.length
+
+  let description = ''
+  const items: Array<{ name: string; amount: string }> = []
+
+  for (let i = start + 1; i < end; i += 1) {
+    const raw = lines[i]
+    if (!raw) continue
+    const trimmed = raw.trim()
+    if (!trimmed) continue
+    if (/^###?\s+/.test(trimmed)) continue // 跳过子标题（**主菜** 之类已用 markdown 加粗，不是 ###）
+
+    // bullet 项
+    const bulletMatch = trimmed.match(/^[*\-+]\s+(.*)$/)
+    if (bulletMatch) {
+      const item = parsePortionItem(bulletMatch[1] ?? '')
+      if (item) items.push(item)
+      continue
+    }
+
+    // 非 bullet 文本：第一行作为 description（剥粗体/链接/尾部冒号）
+    if (!description) {
+      let d = trimmed
+        .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+        .replace(/[`*]/g, '')
+        .trim()
+      d = d.replace(/[:：]\s*$/, '').trim()
+      if (d) description = d.slice(0, 60)
+    }
+  }
+
+  if (items.length === 0) return null
+  return { description, items }
+}
+
+/**
+ * 拆 bullet 文本为 { name, amount }。
+ * 策略：按第一个空格切分；HowToCook 大部分 bullet 都是「名字 数量+单位」格式（如「白糖 10 克」「可乐 500ml」）。
+ * 无空格时全部归 name（如「半个西瓜」「少许盐」），amount 留空。
+ *
+ * 不刻意识别量词——前端把 amount 原样展示，保留 HowToCook 原文的「10 ～ 12 只」「1 个 (450g)」这类灵活写法。
+ */
+function parsePortionItem(text: string): { name: string; amount: string } | null {
+  let s = text.trim()
+  if (!s) return null
+  s = s.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+  // HowToCook 大量菜谱用 "* 份数" 表示"每份量 × 份数"的计算公式，不是物理量；展示前剥掉
+  // 注意：要在剥 markdown 加粗的 `*` 之前先剥这个，否则 "* 份数" 会先变成 " 份数" 残留下来
+  s = s.replace(/\s*\*\s*份数\s*$/, '').trim()
+  s = s.replace(/[`*]/g, '').trim()
+  if (!s) return null
+
+  const m = s.match(/^(\S+)\s+(.+)$/)
+  if (!m) return { name: s, amount: '' }
+  const head = (m[1] ?? '').trim()
+  // 如果第一个空格之前的"name"含中英文逗号（如「黑鳕鱼，带皮，2 片，450g（本菜谱主角...）」），
+  // 说明这条 item 用逗号做主分隔、空格只是细节里的分隔符——按 first-space 切会把 name 切歪。
+  // 这种情况整段都当 name 展示更准确，前端 amount 列会显示 "—" 占位。
+  if (/[，,]/.test(head)) {
+    return { name: s, amount: '' }
+  }
+  // 部分菜谱用 "原料 = 数量" 格式（小龙虾），剥掉 amount 开头的 '=' 让展示更干净
+  const amount = (m[2] ?? '').trim().replace(/^=\s*/, '')
+  return { name: head, amount }
 }
 
 /** 抽取 "## 附加内容" 章节下可读的 bullet 文本，拼成多行字符串。截到 500 字符。 */
@@ -180,18 +352,12 @@ function extractTips(lines: string[]): string | null {
   return bullets.join('\n').slice(0, 500)
 }
 
-/** 找 markdown 里的第一张图，转成 HowToCook GitHub raw 直链。 */
+/** 找 markdown 里的第一张图，转成 HowToCook GitHub raw 直链；作为封面图。 */
 function extractImageUrl(lines: string[], relPath: string): string | null {
   for (const line of lines) {
     const m = line.match(/!\[[^\]]*\]\(([^)]+\.(?:jpg|jpeg|png|webp))\)/i)
     if (!m || !m[1]) continue
-    let imgPath = m[1]
-    if (imgPath.startsWith('http://') || imgPath.startsWith('https://')) return imgPath
-    if (imgPath.startsWith('./')) imgPath = imgPath.slice(2)
-    if (imgPath.startsWith('/')) imgPath = imgPath.slice(1)
-    const dir = relPath.replace(/\\/g, '/').split('/').slice(0, -1).join('/')
-    const fullPath = dir ? `${dir}/${imgPath}` : imgPath
-    return HOWTOCOOK_RAW_BASE + fullPath
+    return resolveImageUrl(m[1], relPath)
   }
   return null
 }
@@ -342,6 +508,7 @@ function parseRecipe(filePath: string, content: string, category: string): Parse
   }
   if (!reasonHint) reasonHint = `${category}类家常菜，难度 ${difficulty}`
 
+  const imageUrl = extractImageUrl(lines, filePath)
   return {
     name,
     difficulty,
@@ -355,8 +522,10 @@ function parseRecipe(filePath: string, content: string, category: string): Parse
     warnings,
     instructions: extractInstructions(lines),
     tips: extractTips(lines),
-    imageUrl: extractImageUrl(lines, filePath),
+    imageUrl,
     sourceRefUrl: deriveSourceRefUrl(filePath),
+    portions: extractPortions(lines),
+    stepImages: extractStepImages(lines, filePath, imageUrl),
   }
 }
 
@@ -396,14 +565,16 @@ interface CliOptions {
   confirm: boolean
   reset: boolean
   limit?: number
+  migrateImages: boolean
 }
 
 function parseArgs(args: string[]): CliOptions {
-  const opts: CliOptions = { source: '.cache/howtocook-data', confirm: false, reset: false }
+  const opts: CliOptions = { source: '.cache/howtocook-data', confirm: false, reset: false, migrateImages: false }
   for (let i = 0; i < args.length; i += 1) {
     const arg = args[i]
     if (arg === '--confirm') opts.confirm = true
     else if (arg === '--reset') opts.reset = true
+    else if (arg === '--migrate-images') opts.migrateImages = true
     else if (arg === '--source') opts.source = args[i + 1] ?? opts.source
     else if (arg === '--limit') opts.limit = Number(args[i + 1])
   }
@@ -475,6 +646,18 @@ async function main() {
     }
     if (r.instructions.length > 3) console.log(`        ...(共 ${r.instructions.length} 步)`)
     if (r.tips) console.log(`      tips: ${r.tips.split('\n').slice(0, 2).join(' / ')}${r.tips.split('\n').length > 2 ? ' ...' : ''}`)
+    if (r.portions) {
+      console.log(`      portions: ${r.portions.description || '（无说明）'} · ${r.portions.items.length} 项`)
+      for (const item of r.portions.items.slice(0, 3)) {
+        console.log(`        - ${item.name}${item.amount ? ` ${item.amount}` : ''}`)
+      }
+      if (r.portions.items.length > 3) console.log(`        ...(共 ${r.portions.items.length} 项)`)
+    }
+    const stepImageCount = Object.keys(r.stepImages).length
+    if (stepImageCount > 0) {
+      const totalImgs = Object.values(r.stepImages).reduce((acc, arr) => acc + arr.length, 0)
+      console.log(`      stepImages: ${stepImageCount} 步带图，共 ${totalImgs} 张`)
+    }
   }
 
   if (failed.length > 0) {
@@ -505,7 +688,7 @@ async function main() {
       console.log(`\n[backfill] HowToCook 旧批次 ${backfilledHowtocook.count} 条 → source=${SOURCE_ID}；种子 ${backfilledSeed.count} 条 → source='seed'`)
     }
 
-    const data = parsed.map((r) => ({
+    const data: Prisma.RecipeSuggestionRuleCreateManyInput[] = parsed.map((r) => ({
       name: r.name,
       requiredIngredients: r.ingredients,
       optionalIngredients: [],
@@ -520,6 +703,9 @@ async function main() {
       tips: r.tips,
       imageUrl: r.imageUrl,
       sourceRefUrl: r.sourceRefUrl,
+      // Json? 字段：null 必须用 Prisma.JsonNull（写 SQL NULL），裸 null 会被 ts 类型系统拒绝
+      portions: r.portions ?? Prisma.JsonNull,
+      stepImages: Object.keys(r.stepImages).length > 0 ? r.stepImages : Prisma.JsonNull,
     }))
     const before = await prisma.recipeSuggestionRule.count()
     let resetCount = 0
@@ -547,6 +733,39 @@ async function main() {
     console.log(`\n${SOURCE_ID} 来源的 popularityScore 分布：`)
     for (const row of scoreStats) {
       console.log(`  ${String(row.popularityScore).padStart(3)} 分: ${row._count} 条`)
+    }
+
+    // 图片迁移：默认 imageUrl 入库为 raw.githubusercontent.com 直链，
+    // --migrate-images 时顺手把新入库的图搬到 R2。逻辑复用 migrate-recipe-images.ts。
+    if (opts.migrateImages) {
+      console.log(`\n=== 迁移新批次图片到 R2 ===\n`)
+      try {
+        const bridge = createR2Bridge()
+        console.log(`R2 ready → bucket=${bridge.bucket}\n`)
+        const report = await migrateRawImagesToR2({
+          prisma,
+          bridge,
+          concurrency: 4,
+          onProgress: (done, total, last) => {
+            if (done % 10 === 0 || done === total || !last.success) {
+              console.log(`  [${done.toString().padStart(3)}/${total}] ${last.success ? '✓' : '✗'} ${last.name.slice(0, 30)}`)
+            }
+          },
+        })
+        console.log(`\n图片迁移：主图 ✓ ${report.success} (${(report.totalBytes / 1024 / 1024).toFixed(2)} MB)  ✗ ${report.failed}`)
+        if (report.stepImagesUploaded > 0 || report.stepImagesFailed > 0) {
+          console.log(`             步骤图 ✓ ${report.stepImagesUploaded}  ✗ ${report.stepImagesFailed}`)
+        }
+        if (report.failures.length > 0) {
+          console.log(`\n失败清单（前 10 条；imageUrl 已置 null，imageSourceUrl 保留 raw URL 可后续重试）：`)
+          for (const f of report.failures.slice(0, 10)) {
+            console.log(`  - ${f.name}: ${f.error}`)
+          }
+        }
+      } catch (error) {
+        console.warn(`\n[migrate-images] R2 上传失败（菜谱已入库，但图仍是 raw URL）：`, error instanceof Error ? error.message : error)
+        console.warn(`稍后可单独跑 prisma/migrate-recipe-images.ts --confirm 重试。`)
+      }
     }
   } finally {
     await prisma.$disconnect()

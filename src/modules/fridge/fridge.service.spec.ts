@@ -18,27 +18,39 @@ describe('FridgeService', () => {
       },
     }
     const prisma = {
-      user: { findUnique: jest.fn().mockResolvedValue({ id: 'user_1' }) },
       $transaction: jest.fn().mockImplementation((callback: (txArg: typeof tx) => Promise<unknown>) => callback(tx)),
     }
     const service = new FridgeService(prisma as never)
 
-    await expect(service.create({ name: '家用冰箱', userId: 'user_1' })).resolves.toEqual({ id: 'fridge_1', shelves: DEFAULT_STORAGE_SHELVES })
+    await expect(service.create({ name: '家用冰箱' }, 'user_1')).resolves.toEqual({ id: 'fridge_1', shelves: DEFAULT_STORAGE_SHELVES })
+    expect(tx.fridge.create).toHaveBeenCalledWith({ data: { name: '家用冰箱', userId: 'user_1' } })
     expect(tx.storageShelf.createMany).toHaveBeenCalledWith({
       data: DEFAULT_STORAGE_SHELVES.map((shelf) => ({ ...shelf, fridgeId: 'fridge_1' })),
       skipDuplicates: true,
     })
   })
 
-  it('rejects fridge creation when user does not exist', async () => {
+  it('ensureFridgeOwnedByUser throws NOT_FOUND when fridge missing', async () => {
     const prisma = {
-      user: { findUnique: jest.fn().mockResolvedValue(null) },
+      fridge: { findUnique: jest.fn().mockResolvedValue(null) },
     }
     const service = new FridgeService(prisma as never)
 
-    await expect(service.create({ name: '家用冰箱', userId: 'missing' })).rejects.toMatchObject({
-      response: '用户不存在',
+    await expect(service.ensureFridgeOwnedByUser('missing', 'user_1')).rejects.toMatchObject({
+      response: '冰箱不存在',
       status: HttpStatus.NOT_FOUND,
+    })
+  })
+
+  it('ensureFridgeOwnedByUser throws FORBIDDEN when fridge belongs to another user', async () => {
+    const prisma = {
+      fridge: { findUnique: jest.fn().mockResolvedValue({ id: 'fridge_1', userId: 'user_other' }) },
+    }
+    const service = new FridgeService(prisma as never)
+
+    await expect(service.ensureFridgeOwnedByUser('fridge_1', 'user_1')).rejects.toMatchObject({
+      response: '无权访问该冰箱',
+      status: HttpStatus.FORBIDDEN,
     })
   })
 
@@ -54,12 +66,12 @@ describe('FridgeService', () => {
       },
     }
     const prisma = {
-      fridge: { findUnique: jest.fn().mockResolvedValue({ id: 'fridge_1' }) },
+      fridge: { findUnique: jest.fn().mockResolvedValue({ id: 'fridge_1', userId: 'user_1' }) },
       $transaction: jest.fn().mockImplementation((callback: (txArg: typeof tx) => Promise<unknown>) => callback(tx)),
     }
     const service = new FridgeService(prisma as never)
 
-    await service.resetDefaultShelves('fridge_1')
+    await service.resetDefaultShelves('fridge_1', 'user_1')
 
     expect(tx.storageShelf.createMany).toHaveBeenCalledWith({
       data: DEFAULT_STORAGE_SHELVES.filter((shelf) => !(shelf.area === existingShelf.area && shelf.name === existingShelf.name)).map((shelf) => ({ ...shelf, fridgeId: 'fridge_1' })),
@@ -69,12 +81,12 @@ describe('FridgeService', () => {
 
   it('rejects shelf lookup when shelf belongs to another fridge', async () => {
     const prisma = {
-      fridge: { findUnique: jest.fn().mockResolvedValue({ id: 'fridge_1' }) },
+      fridge: { findUnique: jest.fn().mockResolvedValue({ id: 'fridge_1', userId: 'user_1' }) },
       storageShelf: { findUnique: jest.fn().mockResolvedValue({ id: 'shelf_1', fridgeId: 'fridge_2' }) },
     }
     const service = new FridgeService(prisma as never)
 
-    await expect(service.getShelf('fridge_1', 'shelf_1')).rejects.toMatchObject({
+    await expect(service.getShelf('fridge_1', 'shelf_1', 'user_1')).rejects.toMatchObject({
       response: '冰箱层位不存在',
       status: HttpStatus.NOT_FOUND,
     })
@@ -82,12 +94,13 @@ describe('FridgeService', () => {
 
   it('rejects deleting shelf that still contains food', async () => {
     const prisma = {
+      fridge: { findUnique: jest.fn().mockResolvedValue({ id: 'fridge_1', userId: 'user_1' }) },
       storageShelf: { findUnique: jest.fn().mockResolvedValue({ id: 'shelf_1', fridgeId: 'fridge_1' }) },
       foodItem: { count: jest.fn().mockResolvedValue(1) },
     }
     const service = new FridgeService(prisma as never)
 
-    await expect(service.removeShelf('fridge_1', 'shelf_1')).rejects.toMatchObject({
+    await expect(service.removeShelf('fridge_1', 'shelf_1', 'user_1')).rejects.toMatchObject({
       response: '层位下还有食材，不能直接删除',
       status: HttpStatus.CONFLICT,
     })
@@ -95,14 +108,14 @@ describe('FridgeService', () => {
 
   it('throws BusinessException with conflict code for duplicate shelf', async () => {
     const prisma = {
-      fridge: { findUnique: jest.fn().mockResolvedValue({ id: 'fridge_1' }) },
+      fridge: { findUnique: jest.fn().mockResolvedValue({ id: 'fridge_1', userId: 'user_1' }) },
       storageShelf: {
         create: jest.fn().mockRejectedValue({ code: 'P2002', clientVersion: 'test' }),
       },
     }
     const service = new FridgeService(prisma as never)
 
-    await expect(service.createShelf('fridge_1', { area: 'fridge', name: '第 1 层', sort: 1 })).rejects.toBeInstanceOf(BusinessException)
-    await expect(service.createShelf('fridge_1', { area: 'fridge', name: '第 1 层', sort: 1 })).rejects.toHaveProperty('errorCode', ErrorCode.CONFLICT)
+    await expect(service.createShelf('fridge_1', { area: 'fridge', name: '第 1 层', sort: 1 }, 'user_1')).rejects.toBeInstanceOf(BusinessException)
+    await expect(service.createShelf('fridge_1', { area: 'fridge', name: '第 1 层', sort: 1 }, 'user_1')).rejects.toHaveProperty('errorCode', ErrorCode.CONFLICT)
   })
 })

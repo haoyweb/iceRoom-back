@@ -219,6 +219,15 @@ pnpm prisma:generate && pnpm prisma:migrate
 
 ---
 
+## 数据来源致谢
+
+- **菜谱**：本项目内置的菜谱数据由 [Anduin2017/HowToCook](https://github.com/Anduin2017/HowToCook) 提供（基础食谱、操作步骤、用料计算、过程图），原项目采用 **Unlicense**（公共领域），在此致谢。
+- **图片**：HowToCook 仓库的原图通过一次性迁移脚本（`prisma/migrate-recipe-images.ts`）已存入本项目自有的 Cloudflare R2 对象存储，数据库中 `imageSourceUrl` 字段保留原 URL 用于审计与溯源。
+
+如需新增菜谱来源（如小红书 / 下厨房），请按 `RecipeSuggestionRule.source` 字段约定写入数据，并在脚本中实现对应的批量导入逻辑。
+
+---
+
 ## License
 
 私有项目，未授权。

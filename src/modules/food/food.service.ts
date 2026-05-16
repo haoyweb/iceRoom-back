@@ -5,6 +5,7 @@ import { BusinessException } from '@/common/errors/business.exception'
 import { ErrorCode } from '@/common/errors/error-code.enum'
 import { withExpiryInfo } from '@/common/utils/expiry'
 import { PrismaService } from '@/database/prisma.service'
+import { FridgeService } from '../fridge/fridge.service'
 import { calculateExpireDate, getFreshnessDays } from './food-freshness.constants'
 import type { ConsumeFoodBatchDto } from './dto/consume-food-batch.dto'
 import type { CreateFoodDto } from './dto/create-food.dto'
@@ -13,15 +14,29 @@ import type { FoodQueryDto } from './dto/food-query.dto'
 import type { UpdateFoodStatusDto } from './dto/update-food-status.dto'
 import type { UpdateFoodDto } from './dto/update-food.dto'
 
+/**
+ * 所有读/写接口都接 userId（来自 JWT）。鉴权策略：
+ *  - 列表型接口（list、listExpiring）：where 子句强制带 `fridge: { userId }`，
+ *    不传 fridgeId 时只返回该用户所有冰箱的食材；传了的话再叠加 fridgeId 过滤。
+ *  - 单条写接口（update/updateStatus/remove）：先 fetch 食材的 fridgeId，
+ *    然后调 fridgeService.ensureFridgeOwnedByUser(fridgeId, userId) 校验。
+ *  - create：body 带 fridgeId/shelfId，必须先校验 fridge 归属。
+ *  - consumeBatch：批量 fetch 然后批量校验，确保任何一条不属于用户就拒。
+ */
 @Injectable()
 export class FoodService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly fridgeService: FridgeService,
+  ) {}
 
-  async list(query: FoodQueryDto) {
+  async list(query: FoodQueryDto, userId: string) {
     const page = query.page ?? 1
     const pageSize = query.pageSize ?? 20
+    // 关联过滤：fridge.userId = 当前用户。fridgeId 可选叠加。
     const where: Prisma.FoodItemWhereInput = {
-      fridgeId: query.fridgeId,
+      fridge: { userId },
+      ...(query.fridgeId ? { fridgeId: query.fridgeId } : {}),
       category: query.category,
       status: query.status,
     }
@@ -40,7 +55,7 @@ export class FoodService {
     return createPageResult(list.map((item) => this.withExpiryLevel(item)), total, page, pageSize)
   }
 
-  async getById(id: string) {
+  async getById(id: string, userId: string) {
     const food = await this.prisma.foodItem.findUnique({
       where: { id },
       include: { shelf: true, fridge: true },
@@ -50,10 +65,15 @@ export class FoodService {
       throw new BusinessException(ErrorCode.FOOD_NOT_FOUND, '食材不存在', HttpStatus.NOT_FOUND)
     }
 
+    if (food.fridge.userId !== userId) {
+      throw new BusinessException(ErrorCode.FORBIDDEN, '无权访问该食材', HttpStatus.FORBIDDEN)
+    }
+
     return this.withExpiryLevel(food)
   }
 
-  async create(data: CreateFoodDto) {
+  async create(data: CreateFoodDto, userId: string) {
+    await this.fridgeService.ensureFridgeOwnedByUser(data.fridgeId, userId)
     const shelf = await this.ensureShelfBelongsToFridge(data.fridgeId, data.shelfId)
 
     const food = await this.prisma.foodItem.create({
@@ -64,10 +84,15 @@ export class FoodService {
     return this.withExpiryLevel(food)
   }
 
-  async update(id: string, data: UpdateFoodDto) {
-    const current = await this.ensureFoodExists(id)
+  async update(id: string, data: UpdateFoodDto, userId: string) {
+    const current = await this.ensureFoodExistsForUser(id, userId)
     const fridgeId = data.fridgeId ?? current.fridgeId
     const shelfId = data.shelfId ?? current.shelfId
+
+    // 如果改了 fridgeId 指向别人的冰箱（理论上前端不该这么做但兜底），同样要校验
+    if (data.fridgeId && data.fridgeId !== current.fridgeId) {
+      await this.fridgeService.ensureFridgeOwnedByUser(data.fridgeId, userId)
+    }
 
     const shelf = await this.ensureShelfBelongsToFridge(fridgeId, shelfId)
 
@@ -80,8 +105,8 @@ export class FoodService {
     return this.withExpiryLevel(food)
   }
 
-  async updateStatus(id: string, data: UpdateFoodStatusDto) {
-    await this.ensureFoodExists(id)
+  async updateStatus(id: string, data: UpdateFoodStatusDto, userId: string) {
+    await this.ensureFoodExistsForUser(id, userId)
 
     const food = await this.prisma.foodItem.update({
       where: { id },
@@ -92,7 +117,7 @@ export class FoodService {
     return this.withExpiryLevel(food)
   }
 
-  async consumeBatch(data: ConsumeFoodBatchDto) {
+  async consumeBatch(data: ConsumeFoodBatchDto, userId: string) {
     const foodIds = data.items.map((item) => item.foodId)
     if (new Set(foodIds).size !== foodIds.length) {
       throw new BusinessException(ErrorCode.BAD_REQUEST, '扣减列表中存在重复的食材', HttpStatus.BAD_REQUEST)
@@ -101,8 +126,24 @@ export class FoodService {
     return this.prisma.$transaction(async (tx) => {
       const foods = await tx.foodItem.findMany({
         where: { id: { in: foodIds } },
-        select: { id: true, name: true, quantity: true, status: true, unit: true },
+        select: {
+          id: true,
+          name: true,
+          quantity: true,
+          status: true,
+          unit: true,
+          // 把 fridge.userId 一起拉出来做权限校验，避免再做一轮 RTT
+          fridge: { select: { userId: true } },
+        },
       })
+
+      // 任何一条不属于当前用户 → 整批拒，避免用户用合法的食材 ID 跟自己的食材一起夹带别人的
+      for (const food of foods) {
+        if (food.fridge.userId !== userId) {
+          throw new BusinessException(ErrorCode.FORBIDDEN, '无权操作该食材', HttpStatus.FORBIDDEN)
+        }
+      }
+
       const foodMap = new Map(foods.map((food) => [food.id, food]))
 
       const plans = data.items.map((item) => {
@@ -162,15 +203,15 @@ export class FoodService {
     })
   }
 
-  async remove(id: string) {
-    await this.ensureFoodExists(id)
+  async remove(id: string, userId: string) {
+    await this.ensureFoodExistsForUser(id, userId)
 
     return this.prisma.foodItem.delete({
       where: { id },
     })
   }
 
-  async listExpiring(query: ExpiringFoodQueryDto) {
+  async listExpiring(query: ExpiringFoodQueryDto, userId: string) {
     const days = query.days ?? 7
     const includeExpired = query.includeExpired ?? true
     const status = query.status ?? FoodStatus.normal
@@ -181,11 +222,12 @@ export class FoodService {
     end.setDate(end.getDate() + days)
 
     if (query.fridgeId) {
-      await this.ensureFridgeExists(query.fridgeId)
+      await this.fridgeService.ensureFridgeOwnedByUser(query.fridgeId, userId)
     }
 
     const where: Prisma.FoodItemWhereInput = {
-      fridgeId: query.fridgeId,
+      fridge: { userId },
+      ...(query.fridgeId ? { fridgeId: query.fridgeId } : {}),
       status,
       expireDate: {
         ...(includeExpired ? {} : { gte: this.startOfToday() }),
@@ -207,7 +249,11 @@ export class FoodService {
     return createPageResult(list.map((item) => this.withExpiryLevel(item)), total, page, pageSize)
   }
 
-  async ensureFoodExists(id: string) {
+  /**
+   * 取食材并保证属于当前用户。读 fridge.userId 一并校验，省一次 RTT。
+   * 返回字段集与原 ensureFoodExists 保持一致，调用方无需改逻辑。
+   */
+  async ensureFoodExistsForUser(id: string, userId: string) {
     const food = await this.prisma.foodItem.findUnique({
       where: { id },
       select: {
@@ -218,6 +264,7 @@ export class FoodService {
         category: true,
         purchaseDate: true,
         expireDateSource: true,
+        fridge: { select: { userId: true } },
       },
     })
 
@@ -225,30 +272,18 @@ export class FoodService {
       throw new BusinessException(ErrorCode.FOOD_NOT_FOUND, '食材不存在', HttpStatus.NOT_FOUND)
     }
 
+    if (food.fridge.userId !== userId) {
+      throw new BusinessException(ErrorCode.FORBIDDEN, '无权访问该食材', HttpStatus.FORBIDDEN)
+    }
+
     return food
   }
 
-  private async ensureFridgeExists(fridgeId: string) {
-    const fridge = await this.prisma.fridge.findUnique({
-      where: { id: fridgeId },
-      select: { id: true },
-    })
-
-    if (!fridge) {
-      throw new BusinessException(ErrorCode.FRIDGE_NOT_FOUND, '冰箱不存在', HttpStatus.NOT_FOUND)
-    }
-  }
-
   private async ensureShelfBelongsToFridge(fridgeId: string, shelfId: string) {
-    // 两个查询独立，可并行减少一次 RTT。Promise.all 在任一抛错时直接 reject，
-    // 行为与原串行版本一致。
-    const [, shelf] = await Promise.all([
-      this.ensureFridgeExists(fridgeId),
-      this.prisma.storageShelf.findUnique({
-        where: { id: shelfId },
-        select: { id: true, fridgeId: true, area: true },
-      }),
-    ])
+    const shelf = await this.prisma.storageShelf.findUnique({
+      where: { id: shelfId },
+      select: { id: true, fridgeId: true, area: true },
+    })
 
     if (!shelf) {
       throw new BusinessException(ErrorCode.STORAGE_SHELF_NOT_FOUND, '冰箱层位不存在', HttpStatus.NOT_FOUND)

@@ -6,9 +6,5 @@ export class CreateFridgeDto {
   @IsString()
   @Length(1, 40)
   name!: string
-
-  @ApiProperty({ example: 'user_demo' })
-  @IsString()
-  @Length(1, 64)
-  userId!: string
 }
+

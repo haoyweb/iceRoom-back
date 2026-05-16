@@ -8,7 +8,14 @@ export enum ErrorCode {
   CONFLICT = 40900,
   INTERNAL_ERROR = 50000,
   USER_NOT_FOUND = 10001,
+  // 鉴权业务错误码：HTTP 状态仍走 401/403/409 等 4xx，但前端可以根据业务 code
+  // 给用户更精确的提示（"密码错误"vs"账号被禁用"），并决定是否触发 refresh 流。
+  INVALID_CREDENTIALS = 10101,
+  TOKEN_EXPIRED = 10102,
+  USER_EXISTS = 10103,
+  REFRESH_TOKEN_INVALID = 10104,
   FRIDGE_NOT_FOUND = 20001,
   STORAGE_SHELF_NOT_FOUND = 20002,
   FOOD_NOT_FOUND = 30001,
 }
+
