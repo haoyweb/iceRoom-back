@@ -2,6 +2,7 @@ import { Body, Controller, Get, Param, Post, Query } from '@nestjs/common'
 import { ApiOkResponse, ApiParam, ApiTags } from '@nestjs/swagger'
 import { CurrentUser } from '@/common/decorators/current-user.decorator'
 import { FridgeService } from '../fridge/fridge.service'
+import { RecipeDetailQueryDto } from './dto/recipe-detail-query.dto'
 import { RecipeListQueryDto } from './dto/recipe-list-query.dto'
 import { RecipeSuggestionByFridgeDto } from './dto/recipe-suggestion-by-fridge.dto'
 import { RecipeSuggestionQueryDto } from './dto/recipe-suggestion-query.dto'
@@ -41,8 +42,11 @@ export class RecipeSuggestionController {
   @Get(':id')
   @ApiParam({ name: 'id', description: 'Recipe rule ID' })
   @ApiOkResponse({ description: 'Get full recipe detail including instructions/tips/image/portions/stepImages.' })
-  findOne(@Param('id') id: string) {
-    return this.recipeSuggestionService.findById(id)
+  async findOne(@Param('id') id: string, @Query() query: RecipeDetailQueryDto, @CurrentUser('id') userId: string) {
+    if (query.fridgeId) {
+      await this.fridgeService.ensureFridgeOwnedByUser(query.fridgeId, userId)
+    }
+    return this.recipeSuggestionService.findById(id, query.fridgeId)
   }
 }
 
