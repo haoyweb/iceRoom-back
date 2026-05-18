@@ -138,7 +138,7 @@ export class QwenVisionIngredientProvider implements VisionIngredientProvider {
       ? raw.ignored.map(item => this.normalizeIgnoredItem(item)).filter((item): item is IgnoredRecognitionItemDto => item !== null).slice(0, 10)
       : []
     const warnings = Array.isArray(raw.warnings)
-      ? raw.warnings.map(warning => this.toSafeString(warning, 120)).filter(Boolean).slice(0, 5)
+      ? raw.warnings.map(warning => this.toSafeString(warning, 120)).filter((warning): warning is string => Boolean(warning)).slice(0, 5)
       : []
 
     return { sourceType, items, ignored, warnings }

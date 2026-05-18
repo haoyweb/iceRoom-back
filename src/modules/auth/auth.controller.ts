@@ -15,8 +15,7 @@ import { AuthService } from './auth.service'
  * 需要 Redis 维护 jti 黑名单 + JwtAuthGuard 增加黑名单校验。
  *
  * TODO(security-before-prod):
- *   - 接 @nestjs/throttler 给 register/login 加 IP 级限流，防爆破
- *   - bcryptRounds 调到 12+（生产硬件下约 300ms）
+ *   - 生产环境 BCRYPT_ROUNDS 调到 12+（生产硬件下约 300ms）
  *   - 上线前补单元/e2e 测试覆盖错误分支
  */
 @ApiTags('auth')
