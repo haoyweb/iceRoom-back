@@ -27,5 +27,12 @@ export const envValidationSchema = Joi.object({
     Joi.string().uri({ scheme: ['https'] }),
     Joi.string().valid(''),
   ).default(''),
+
+  VISION_INGREDIENT_PROVIDER: Joi.string().valid('qwen', 'kimi', 'doubao', 'glm').default('qwen'),
+  VISION_INGREDIENT_TIMEOUT_MS: Joi.number().integer().min(1000).max(120000).default(20000),
+  VISION_INGREDIENT_MAX_IMAGE_BYTES: Joi.number().integer().min(1024).max(10485760).default(5242880),
+  QWEN_VISION_API_KEY: Joi.string().allow('').default(''),
+  QWEN_VISION_BASE_URL: Joi.string().uri({ scheme: ['https'] }).default('https://dashscope.aliyuncs.com/compatible-mode/v1'),
+  QWEN_VISION_MODEL: Joi.string().default('qwen3-vl-flash'),
 })
 

@@ -10,10 +10,12 @@ import { HealthModule } from './modules/health/health.module'
 import { RecipeSuggestionModule } from './modules/recipe-suggestion/recipe-suggestion.module'
 import { StorageModule } from './modules/storage/storage.module'
 import { UserModule } from './modules/user/user.module'
+import { VisionRecognitionModule } from './modules/vision-recognition/vision-recognition.module'
 import { appConfig } from './config/app.config'
 import { authConfig } from './config/auth.config'
 import { databaseConfig } from './config/database.config'
 import { storageConfig } from './config/storage.config'
+import { visionRecognitionConfig } from './config/vision-recognition.config'
 import { envValidationSchema } from './config/env.validation'
 import { DatabaseModule } from './database/database.module'
 
@@ -21,7 +23,7 @@ import { DatabaseModule } from './database/database.module'
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
-      load: [appConfig, authConfig, databaseConfig, storageConfig],
+      load: [appConfig, authConfig, databaseConfig, storageConfig, visionRecognitionConfig],
       validationSchema: envValidationSchema,
       expandVariables: true,
     }),
@@ -39,6 +41,7 @@ import { DatabaseModule } from './database/database.module'
     FridgeModule,
     FoodModule,
     RecipeSuggestionModule,
+    VisionRecognitionModule,
   ],
   // 全局 JwtAuthGuard：默认所有接口都要登录，要免登录的接口显式 @Public()。
   // 这是「白名单短、黑名单长」场景下的安全默认——避免漏挂守卫导致接口裸奔。
