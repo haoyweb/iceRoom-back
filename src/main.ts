@@ -11,7 +11,7 @@ async function bootstrap() {
   const app = await NestFactory.create(AppModule)
   const configService = app.get(ConfigService)
   const port = configService.get<number>('app.port', 3000)
-  const corsOrigin = configService.get<string>('app.corsOrigin', '*')
+  const corsOrigin = configService.get<string[]>('app.corsOrigin', ['*'])
   const swaggerEnabled = configService.get<boolean>('app.swaggerEnabled', true)
 
   app.setGlobalPrefix(API_PREFIX)
@@ -19,7 +19,12 @@ async function bootstrap() {
     type: VersioningType.URI,
     defaultVersion: API_VERSION,
   })
-  app.enableCors({ origin: corsOrigin })
+  // 单 `*` 走 origin: true（放开所有），多 origin 走精确白名单——避免 `*` + credentials 在浏览器侧被拒
+  const isWildcard = corsOrigin.length === 1 && corsOrigin[0] === '*'
+  app.enableCors({
+    origin: isWildcard ? true : corsOrigin,
+    credentials: !isWildcard,
+  })
   app.useGlobalPipes(
     new ValidationPipe({
       whitelist: true,

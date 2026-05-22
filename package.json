@@ -19,7 +19,8 @@
     "prisma:seed": "prisma db seed",
     "prisma:studio": "prisma studio",
     "db:wipe-users": "ts-node -P tsconfig.json prisma/scripts/wipe-demo-users.ts",
-    "db:reset-for-auth": "pnpm db:wipe-users && pnpm prisma:migrate"
+    "db:reset-for-auth": "pnpm db:wipe-users && pnpm prisma:migrate",
+    "admin:promote": "ts-node -P tsconfig.json prisma/scripts/promote-admin.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1046.0",

@@ -12,6 +12,13 @@ interface QwenChatCompletionResponse {
       content?: string
     }
   }>
+  // DashScope 兼容协议返回的 usage 对象。字段命名沿用 OpenAI 风格 prompt/completion/total_tokens。
+  // 部分模型可能不返回 usage 或字段不齐——解析时全用 ?? null 兜底，绝不让缺字段拖垮主流程。
+  usage?: {
+    prompt_tokens?: number
+    completion_tokens?: number
+    total_tokens?: number
+  }
 }
 
 interface RawRecognitionResult {
@@ -89,10 +96,13 @@ export class QwenVisionIngredientProvider implements VisionIngredientProvider {
         throw new BusinessException(ErrorCode.INTERNAL_ERROR, '视觉识别结果为空', HttpStatus.BAD_GATEWAY)
       }
 
+      const usage = this.normalizeUsage(body.usage)
+
       return {
         provider: this.name,
         model,
         ...this.normalizeResult(content),
+        ...usage,
       }
     }
     catch (error) {
@@ -208,5 +218,26 @@ export class QwenVisionIngredientProvider implements VisionIngredientProvider {
       return undefined
     }
     return Math.max(0, Math.min(1, numberValue))
+  }
+
+  /**
+   * 把 DashScope 的 usage 对象转成 result DTO 的扁平字段。
+   *
+   * - 任何非正整数都丢弃（防止 model 返回 "0" 字符串这种边界值)
+   * - 三个字段相互独立——拿到 prompt_tokens 但没有 total_tokens 也按部分写入
+   * - 完全无 usage 时返回空对象，spread 不影响主结果
+   */
+  private normalizeUsage(usage: QwenChatCompletionResponse['usage']) {
+    if (!usage) {
+      return {}
+    }
+    const inputTokens = this.toNonNegativeInteger(usage.prompt_tokens)
+    const outputTokens = this.toNonNegativeInteger(usage.completion_tokens)
+    const totalTokens = this.toNonNegativeInteger(usage.total_tokens)
+    return {
+      ...(inputTokens === undefined ? {} : { inputTokens }),
+      ...(outputTokens === undefined ? {} : { outputTokens }),
+      ...(totalTokens === undefined ? {} : { totalTokens }),
+    }
   }
 }

@@ -1,9 +1,10 @@
-import { Body, Controller, Post, UploadedFile, UseInterceptors } from '@nestjs/common'
+import { Body, Controller, Delete, Get, Param, Patch, Post, Query, UploadedFile, UseInterceptors } from '@nestjs/common'
 import { FileInterceptor } from '@nestjs/platform-express'
-import { ApiBody, ApiConsumes, ApiCreatedResponse, ApiTags } from '@nestjs/swagger'
+import { ApiBody, ApiConsumes, ApiCreatedResponse, ApiOkResponse, ApiTags } from '@nestjs/swagger'
 import { CurrentUser } from '@/common/decorators/current-user.decorator'
 import { RecognizeIngredientsDto } from './dto/recognize-ingredients.dto'
-import { RecognizeIngredientsResultDto } from './dto/recognized-ingredient.dto'
+import { CreateIngredientRecognitionJobResultDto, IngredientRecognitionJobDetailDto } from './dto/vision-recognition-job.dto'
+import { VisionRecognitionJobQueryDto } from './dto/vision-recognition-job-query.dto'
 import type { UploadedImageFile } from './vision-recognition.types'
 import { VisionRecognitionService } from './vision-recognition.service'
 
@@ -28,13 +29,47 @@ export class VisionRecognitionController {
       },
     },
   })
-  @ApiCreatedResponse({ type: RecognizeIngredientsResultDto, description: 'Recognize ingredient drafts from an uploaded photo.' })
+  @ApiCreatedResponse({ type: CreateIngredientRecognitionJobResultDto, description: 'Create an async ingredient recognition job.' })
   @UseInterceptors(FileInterceptor('image'))
-  recognizeIngredients(
+  createIngredientRecognitionJob(
     @UploadedFile() image: UploadedImageFile | undefined,
     @Body() data: RecognizeIngredientsDto,
     @CurrentUser('id') userId: string,
   ) {
-    return this.visionRecognitionService.recognizeIngredients(image, data, userId)
+    return this.visionRecognitionService.createIngredientJob(image, data, userId)
+  }
+
+  @Get('ingredients')
+  listIngredientRecognitionJobs(
+    @Query() query: VisionRecognitionJobQueryDto,
+    @CurrentUser('id') userId: string,
+  ) {
+    return this.visionRecognitionService.listIngredientJobs(query, userId)
+  }
+
+  @Get('ingredients/:id')
+  @ApiOkResponse({ type: IngredientRecognitionJobDetailDto })
+  getIngredientRecognitionJob(
+    @Param('id') id: string,
+    @CurrentUser('id') userId: string,
+  ) {
+    return this.visionRecognitionService.getIngredientJob(id, userId)
+  }
+
+  @Patch('ingredients/:id/confirmed')
+  @ApiOkResponse({ type: IngredientRecognitionJobDetailDto })
+  markIngredientRecognitionConfirmed(
+    @Param('id') id: string,
+    @CurrentUser('id') userId: string,
+  ) {
+    return this.visionRecognitionService.markIngredientJobConfirmed(id, userId)
+  }
+
+  @Delete('ingredients/:id')
+  deleteIngredientRecognitionJob(
+    @Param('id') id: string,
+    @CurrentUser('id') userId: string,
+  ) {
+    return this.visionRecognitionService.deleteIngredientJob(id, userId)
   }
 }

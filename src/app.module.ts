@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common'
 import { ConfigModule } from '@nestjs/config'
 import { APP_GUARD } from '@nestjs/core'
 import { ThrottlerGuard, ThrottlerModule, seconds } from '@nestjs/throttler'
+import { AdminModule } from './modules/admin/admin.module'
 import { AuthModule } from './modules/auth/auth.module'
 import { JwtAuthGuard } from './modules/auth/guards/jwt-auth.guard'
 import { FoodModule } from './modules/food/food.module'
@@ -42,6 +43,7 @@ import { DatabaseModule } from './database/database.module'
     FoodModule,
     RecipeSuggestionModule,
     VisionRecognitionModule,
+    AdminModule,
   ],
   // 全局 JwtAuthGuard：默认所有接口都要登录，要免登录的接口显式 @Public()。
   // 这是「白名单短、黑名单长」场景下的安全默认——避免漏挂守卫导致接口裸奔。

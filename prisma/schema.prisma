@@ -41,31 +41,64 @@ enum ExpireDateSource {
   auto
 }
 
+enum VisionRecognitionStatus {
+  pending
+  success
+  failed
+}
+
+// 用户角色。普通用户默认 user；运营后台访问需要 admin 或 super_admin。
+// super_admin 是「兜底位」——只能由 super_admin 操作，避免互相误降权造成无人可恢复的状态。
+enum UserRole {
+  user
+  admin
+  super_admin
+}
+
+// 用户启用状态。banned 用户登录会被拒，运营可以反向 unban 恢复。
+// 不在 User 上做软删——保留 cascade 删除路径让数据迁移更干净。
+enum UserStatus {
+  active
+  banned
+}
+
 model User {
-  id           String   @id @default(cuid())
+  id                    String                 @id @default(cuid())
   // 登录账号：3-32 位字母/数字/下划线，全库唯一。
   // 强校验放在 DTO 层（class-validator），DB 仅靠 @unique 兜住竞态/绕过 API 的写入。
-  username     String   @unique
+  username              String                 @unique
   // bcryptjs 哈希值（含 cost 头），不存原密码。比对走 bcrypt.compare，rounds 由配置控制。
-  passwordHash String
+  passwordHash          String
   // 展示用昵称，注册时可选；为空时前端用 username 兜底渲染。
-  nickname     String?
+  nickname              String?
   // 头像 URL（占位，未来接 R2 上传）。MVP 阶段允许为空。
-  avatar       String?
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
-  fridges      Fridge[]
+  avatar                String?
+  // 运营后台权限位。注册默认 user，提权走 prisma/scripts/promote-admin.ts 或后台界面。
+  role                  UserRole               @default(user)
+  // 启用状态。banned 时登录直接被 AuthService 拒绝；AdminGuard 每次请求都会重新查这两个字段。
+  status                UserStatus             @default(active)
+  // 封禁时间戳与原因，仅供运营查询和审计。unban 时只把 status 改回 active，不清空这两个字段。
+  bannedAt              DateTime?
+  banReason             String?
+  createdAt             DateTime               @default(now())
+  updatedAt             DateTime               @updatedAt
+  fridges               Fridge[]
+  visionRecognitionJobs VisionRecognitionJob[]
+
+  @@index([role])
+  @@index([status])
 }
 
 model Fridge {
-  id        String         @id @default(cuid())
-  name      String
-  userId    String
-  createdAt DateTime       @default(now())
-  updatedAt DateTime       @updatedAt
-  user      User           @relation(fields: [userId], references: [id], onDelete: Cascade)
-  shelves   StorageShelf[]
-  foods     FoodItem[]
+  id                    String                 @id @default(cuid())
+  name                  String
+  userId                String
+  createdAt             DateTime               @default(now())
+  updatedAt             DateTime               @updatedAt
+  user                  User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  shelves               StorageShelf[]
+  foods                 FoodItem[]
+  visionRecognitionJobs VisionRecognitionJob[]
 
   @@index([userId])
 }
@@ -81,33 +114,68 @@ model StorageShelf {
   fridge    Fridge      @relation(fields: [fridgeId], references: [id], onDelete: Cascade)
   foods     FoodItem[]
 
-  @@index([fridgeId])
   @@unique([fridgeId, area, name])
+  @@index([fridgeId])
 }
 
 model FoodItem {
-  id           String       @id @default(cuid())
-  fridgeId     String
-  shelfId      String
-  name         String
-  category     FoodCategory
-  quantity     Decimal?     @db.Decimal(10, 2)
-  unit         String?
+  id               String           @id @default(cuid())
+  fridgeId         String
+  shelfId          String
+  name             String
+  category         FoodCategory
+  quantity         Decimal?         @db.Decimal(10, 2)
+  unit             String?
   purchaseDate     DateTime?
   expireDate       DateTime
   expireDateSource ExpireDateSource @default(manual)
   status           FoodStatus       @default(normal)
-  note         String?
-  createdAt    DateTime     @default(now())
-  updatedAt    DateTime     @updatedAt
-  fridge       Fridge       @relation(fields: [fridgeId], references: [id], onDelete: Cascade)
+  note             String?
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+  fridge           Fridge           @relation(fields: [fridgeId], references: [id], onDelete: Cascade)
   // 层位删除策略：业务层在 FridgeService.removeShelf 中已拒绝"带食材删层位"，
   // DB 层显式 Restrict 是兜底，防止任何代码绕过业务校验时静默删除食材。
-  shelf        StorageShelf @relation(fields: [shelfId], references: [id], onDelete: Restrict)
+  shelf            StorageShelf     @relation(fields: [shelfId], references: [id], onDelete: Restrict)
 
   @@index([fridgeId, expireDate])
   @@index([shelfId])
   @@index([status])
+}
+
+model VisionRecognitionJob {
+  id                  String                  @id @default(cuid())
+  userId              String
+  fridgeId            String?
+  shelfId             String?
+  status              VisionRecognitionStatus @default(pending)
+  requestedSourceType String                  @default("auto")
+  detectedSourceType  String?
+  provider            String?
+  model               String?
+  items               Json?
+  ignored             Json?
+  warnings            String[]                @default([])
+  itemCount           Int                     @default(0)
+  imageUrl            String?
+  imageExpiresAt      DateTime?
+  errorMessage        String?
+  confirmedAt         DateTime?
+  // Provider 用量与成本追踪。Qwen DashScope 兼容协议会返回 usage.{prompt,completion,total}_tokens；
+  // 解析失败或未配置费率时全部留 null，前端用 "-" 兜底。
+  // 注意：costUSD 用 Decimal(10,6) 是因为单次识别成本可能只有 $0.0001 级别，需要 6 位小数精度。
+  inputTokens         Int?
+  outputTokens        Int?
+  totalTokens         Int?
+  costUSD             Decimal?                @db.Decimal(10, 6)
+  createdAt           DateTime                @default(now())
+  updatedAt           DateTime                @updatedAt
+  user                User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  fridge              Fridge?                 @relation(fields: [fridgeId], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt])
+  @@index([userId, status, createdAt])
+  @@index([fridgeId])
 }
 
 model RecipeSuggestionRule {

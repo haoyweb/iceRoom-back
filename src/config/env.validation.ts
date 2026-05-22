@@ -34,5 +34,9 @@ export const envValidationSchema = Joi.object({
   QWEN_VISION_API_KEY: Joi.string().allow('').default(''),
   QWEN_VISION_BASE_URL: Joi.string().uri({ scheme: ['https'] }).default('https://dashscope.aliyuncs.com/compatible-mode/v1'),
   QWEN_VISION_MODEL: Joi.string().default('qwen3-vl-flash'),
+  // Qwen 费率（USD per 1K tokens）。未配置默认为 0 → 视为「未配置费率」，
+  // service 写入 costUSD=null，前端在监控页用 "-" 展示。
+  VISION_QWEN_INPUT_USD_PER_1K: Joi.number().min(0).default(0),
+  VISION_QWEN_OUTPUT_USD_PER_1K: Joi.number().min(0).default(0),
 })
 

@@ -55,4 +55,14 @@ export class RecognizeIngredientsResultDto {
 
   @ApiPropertyOptional({ type: [String], description: 'Non-blocking recognition warnings.' })
   warnings?: string[]
+
+  // Provider 用量。Provider 拿不到时全 undefined，service 会写 null 到 DB，前端用 "-" 兜底。
+  @ApiPropertyOptional({ description: 'Provider input tokens.' })
+  inputTokens?: number
+
+  @ApiPropertyOptional({ description: 'Provider output tokens.' })
+  outputTokens?: number
+
+  @ApiPropertyOptional({ description: 'Provider total tokens.' })
+  totalTokens?: number
 }

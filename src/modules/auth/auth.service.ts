@@ -1,7 +1,7 @@
 import { HttpStatus, Injectable } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
 import { JwtService } from '@nestjs/jwt'
-import { Prisma, User } from '@prisma/client'
+import { Prisma, User, UserStatus } from '@prisma/client'
 import * as bcrypt from 'bcryptjs'
 import { BusinessException } from '@/common/errors/business.exception'
 import { ErrorCode } from '@/common/errors/error-code.enum'
@@ -63,6 +63,12 @@ export class AuthService {
       throw new BusinessException(ErrorCode.INVALID_CREDENTIALS, '账号或密码错误', HttpStatus.UNAUTHORIZED)
     }
 
+    // 封禁校验放在密码校验之后——避免「输错密码却收到"已被封禁"」泄露账号存在性。
+    // 密码正确才告诉对方"你这个账号已被封禁"，是平衡安全与可用性的折中。
+    if (user.status === UserStatus.banned) {
+      throw new BusinessException(ErrorCode.FORBIDDEN, '账号已被封禁，请联系管理员', HttpStatus.FORBIDDEN)
+    }
+
     return this.buildLoginResponse(user)
   }
 
@@ -90,6 +96,12 @@ export class AuthService {
     const user = await this.prisma.user.findUnique({ where: { id: payload.sub } })
     if (!user) {
       throw new BusinessException(ErrorCode.REFRESH_TOKEN_INVALID, '用户不存在', HttpStatus.UNAUTHORIZED)
+    }
+
+    // 被封禁的用户不能靠 refresh token 续命——否则 ban 操作只能等 refresh ttl（7 天）才生效。
+    // 这里返回 FORBIDDEN 而非 REFRESH_TOKEN_INVALID，让前端区分「token 坏了」和「账号被封禁」两种情况。
+    if (user.status === UserStatus.banned) {
+      throw new BusinessException(ErrorCode.FORBIDDEN, '账号已被封禁，请联系管理员', HttpStatus.FORBIDDEN)
     }
 
     return this.signTokens(user)
@@ -123,6 +135,8 @@ export class AuthService {
       username: user.username,
       nickname: user.nickname,
       avatar: user.avatar,
+      role: user.role,
+      status: user.status,
       createdAt: user.createdAt,
       updatedAt: user.updatedAt,
     }
