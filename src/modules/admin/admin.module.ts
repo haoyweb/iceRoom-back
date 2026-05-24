@@ -3,8 +3,11 @@ import { AdminDashboardController } from './dashboard/admin-dashboard.controller
 import { AdminDashboardService } from './dashboard/admin-dashboard.service'
 import { AdminGuard } from './guards/admin.guard'
 import { RolesGuard } from './guards/roles.guard'
+import { SettingsModule } from '../settings/settings.module'
 import { AdminRecipesController } from './recipes/admin-recipes.controller'
 import { AdminRecipesService } from './recipes/admin-recipes.service'
+import { AdminSettingsController } from './settings/admin-settings.controller'
+import { AdminSettingsService } from './settings/admin-settings.service'
 import { AdminUsersController } from './users/admin-users.controller'
 import { AdminUsersService } from './users/admin-users.service'
 import { AdminVisionJobsController } from './vision-jobs/admin-vision-jobs.controller'
@@ -21,11 +24,13 @@ import { AdminVisionJobsService } from './vision-jobs/admin-vision-jobs.service'
  * 不需要 @Global()。
  */
 @Module({
+  imports: [SettingsModule],
   controllers: [
     AdminUsersController,
     AdminRecipesController,
     AdminVisionJobsController,
     AdminDashboardController,
+    AdminSettingsController,
   ],
   providers: [
     AdminGuard,
@@ -34,6 +39,7 @@ import { AdminVisionJobsService } from './vision-jobs/admin-vision-jobs.service'
     AdminRecipesService,
     AdminVisionJobsService,
     AdminDashboardService,
+    AdminSettingsService,
   ],
 })
 export class AdminModule {}

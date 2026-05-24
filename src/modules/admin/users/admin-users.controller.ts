@@ -1,4 +1,4 @@
-import { Body, Controller, Get, HttpCode, HttpStatus, Param, Post, Query, UseGuards } from '@nestjs/common'
+import { Body, Controller, Get, HttpCode, HttpStatus, Param, Patch, Post, Query, UseGuards } from '@nestjs/common'
 import { ApiOkResponse, ApiTags } from '@nestjs/swagger'
 import { CurrentUser } from '@/common/decorators/current-user.decorator'
 import { AdminGuard } from '../guards/admin.guard'
@@ -7,6 +7,7 @@ import { AdminUsersService } from './admin-users.service'
 import { BanUserDto } from './dto/ban-user.dto'
 import { ListUsersQueryDto } from './dto/list-users.query.dto'
 import { ResetPasswordDto } from './dto/reset-password.dto'
+import { UpdateVisionDailyLimitDto } from './dto/update-vision-daily-limit.dto'
 
 @ApiTags('admin-users')
 @UseGuards(AdminGuard, RolesGuard)
@@ -49,5 +50,15 @@ export class AdminUsersController {
     @CurrentUser('id') operatorId: string,
   ) {
     return this.service.resetPassword(id, dto, operatorId)
+  }
+
+  @Patch(':id/vision-daily-limit')
+  @ApiOkResponse({ description: '设置用户每日拍照识别额度' })
+  updateVisionDailyLimit(
+    @Param('id') id: string,
+    @Body() dto: UpdateVisionDailyLimitDto,
+    @CurrentUser('id') operatorId: string,
+  ) {
+    return this.service.updateVisionDailyLimit(id, dto, operatorId)
   }
 }

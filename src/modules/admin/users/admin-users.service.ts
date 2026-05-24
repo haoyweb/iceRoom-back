@@ -9,6 +9,7 @@ import { PrismaService } from '@/database/prisma.service'
 import type { BanUserDto } from './dto/ban-user.dto'
 import type { ListUsersQueryDto } from './dto/list-users.query.dto'
 import type { ResetPasswordDto } from './dto/reset-password.dto'
+import type { UpdateVisionDailyLimitDto } from './dto/update-vision-daily-limit.dto'
 
 /**
  * 运营后台用户管理服务。
@@ -61,6 +62,7 @@ export class AdminUsersService {
           banReason: true,
           createdAt: true,
           updatedAt: true,
+          visionDailyLimit: true,
           _count: {
             select: { fridges: true, visionRecognitionJobs: true },
           },
@@ -80,6 +82,7 @@ export class AdminUsersService {
       banReason: u.banReason,
       createdAt: u.createdAt,
       updatedAt: u.updatedAt,
+      visionDailyLimit: u.visionDailyLimit,
       fridgeCount: u._count.fridges,
       visionJobCount: u._count.visionRecognitionJobs,
     }))
@@ -99,6 +102,7 @@ export class AdminUsersService {
         status: true,
         bannedAt: true,
         banReason: true,
+        visionDailyLimit: true,
         createdAt: true,
         updatedAt: true,
         _count: {
@@ -127,6 +131,7 @@ export class AdminUsersService {
       banReason: user.banReason,
       createdAt: user.createdAt,
       updatedAt: user.updatedAt,
+      visionDailyLimit: user.visionDailyLimit,
       fridgeCount: user._count.fridges,
       visionJobCount: user._count.visionRecognitionJobs,
       foodCount,
@@ -175,6 +180,16 @@ export class AdminUsersService {
       data: { passwordHash },
     })
     return { id, success: true as const }
+  }
+
+  async updateVisionDailyLimit(id: string, dto: UpdateVisionDailyLimitDto, operatorId: string) {
+    await this.assertCanOperate(id, operatorId)
+    const updated = await this.prisma.user.update({
+      where: { id },
+      data: { visionDailyLimit: dto.visionDailyLimit },
+      select: { id: true, visionDailyLimit: true },
+    })
+    return updated
   }
 
   /**

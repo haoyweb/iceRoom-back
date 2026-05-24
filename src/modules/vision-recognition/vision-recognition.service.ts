@@ -1,6 +1,6 @@
 import { HttpStatus, Injectable } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
-import { Prisma, VisionRecognitionStatus } from '@prisma/client'
+import { Prisma, UserRole, VisionRecognitionStatus } from '@prisma/client'
 import { createPageResult } from '@/common/dto/page.dto'
 import { BusinessException } from '@/common/errors/business.exception'
 import { ErrorCode } from '@/common/errors/error-code.enum'
@@ -15,6 +15,7 @@ import { VisionIngredientProviderFactory } from './providers/vision-ingredient-p
 
 const ALLOWED_IMAGE_MIME_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp'])
 const RECOGNITION_IMAGE_RETENTION_DAYS = 90
+const CHINA_TIMEZONE_OFFSET_MS = 8 * 60 * 60 * 1000
 
 interface RecognitionImagePayload {
   buffer: Buffer
@@ -35,6 +36,7 @@ export class VisionRecognitionService {
     void this.cleanupExpiredImages(userId).catch(() => undefined)
     this.validateImage(file)
     await this.validateContext(data, userId)
+    await this.assertVisionDailyQuota(userId)
 
     const job = await this.prisma.visionRecognitionJob.create({
       data: {
@@ -214,6 +216,54 @@ export class VisionRecognitionService {
       return null
     }
     return total.toFixed(6)
+  }
+
+  private async assertVisionDailyQuota(userId: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { role: true, visionDailyLimit: true },
+    })
+
+    if (!user) {
+      throw new BusinessException(ErrorCode.UNAUTHORIZED, '未登录', HttpStatus.UNAUTHORIZED)
+    }
+
+    if (user.role === UserRole.super_admin) {
+      return
+    }
+
+    const { start, end } = this.getChinaTodayRange()
+    const used = await this.prisma.visionRecognitionJob.count({
+      where: {
+        userId,
+        createdAt: { gte: start, lt: end },
+      },
+    })
+
+    if (used >= user.visionDailyLimit) {
+      throw new BusinessException(
+        ErrorCode.VISION_DAILY_LIMIT_EXCEEDED,
+        '今日拍照识别次数已用完，请明天再试',
+        HttpStatus.TOO_MANY_REQUESTS,
+      )
+    }
+  }
+
+  private getChinaTodayRange(now = new Date()) {
+    const chinaNow = new Date(now.getTime() + CHINA_TIMEZONE_OFFSET_MS)
+    const startOfChinaDayAsUtc = Date.UTC(
+      chinaNow.getUTCFullYear(),
+      chinaNow.getUTCMonth(),
+      chinaNow.getUTCDate(),
+      0,
+      0,
+      0,
+      0,
+    )
+    return {
+      start: new Date(startOfChinaDayAsUtc - CHINA_TIMEZONE_OFFSET_MS),
+      end: new Date(startOfChinaDayAsUtc + 24 * 60 * 60 * 1000 - CHINA_TIMEZONE_OFFSET_MS),
+    }
   }
 
   private async validateContext(data: RecognizeIngredientsDto, userId: string) {

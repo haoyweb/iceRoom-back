@@ -6,6 +6,7 @@ import * as bcrypt from 'bcryptjs'
 import { BusinessException } from '@/common/errors/business.exception'
 import { ErrorCode } from '@/common/errors/error-code.enum'
 import { PrismaService } from '@/database/prisma.service'
+import { SettingsService } from '@/modules/settings/settings.service'
 import type { LoginDto } from './dto/login.dto'
 import type { RegisterDto } from './dto/register.dto'
 import type { AuthTokens, AuthUserPublic, JwtPayload, LoginResponse } from './auth.types'
@@ -16,6 +17,7 @@ export class AuthService {
     private readonly prisma: PrismaService,
     private readonly jwtService: JwtService,
     private readonly config: ConfigService,
+    private readonly settings: SettingsService,
   ) {}
 
   /**
@@ -23,6 +25,10 @@ export class AuthService {
    * 注册成功后直接签发一对 token，省一次往返登录请求。
    */
   async register(dto: RegisterDto): Promise<LoginResponse> {
+    if (!(await this.settings.isRegistrationEnabled())) {
+      throw new BusinessException(ErrorCode.REGISTRATION_DISABLED, '注册暂未开放，请联系管理员', HttpStatus.FORBIDDEN)
+    }
+
     const rounds = this.config.get<number>('auth.bcryptRounds') ?? 10
     const passwordHash = await bcrypt.hash(dto.password, rounds)
 

@@ -28,6 +28,12 @@ const CONFIG_VALUES = {
   'auth.bcryptRounds': 4, // 测试环境用最小值加速
 }
 
+const settings = { isRegistrationEnabled: jest.fn().mockResolvedValue(true) }
+
+function createService(prisma: unknown, jwt: JwtService) {
+  return new AuthService(prisma as never, jwt, buildConfig(CONFIG_VALUES), settings as never)
+}
+
 describe('AuthService', () => {
   it('register conflict throws USER_EXISTS', async () => {
     // Prisma P2002 唯一约束冲突。模拟 user.create 抛 PrismaClientKnownRequestError({code:'P2002'})
@@ -36,8 +42,7 @@ describe('AuthService', () => {
       user: { create: jest.fn().mockRejectedValue(prismaError) },
     }
     const jwt = { signAsync: jest.fn() } as unknown as JwtService
-    const config = buildConfig(CONFIG_VALUES)
-    const service = new AuthService(prisma as never, jwt, config)
+    const service = createService(prisma, jwt)
 
     await expect(service.register({ username: 'alice', password: 'password' })).rejects.toBeInstanceOf(BusinessException)
     await expect(service.register({ username: 'alice', password: 'password' })).rejects.toMatchObject({
@@ -52,7 +57,7 @@ describe('AuthService', () => {
       user: { findUnique: jest.fn().mockResolvedValue({ id: 'u1', username: 'alice', passwordHash }) },
     }
     const jwt = { signAsync: jest.fn() } as unknown as JwtService
-    const service = new AuthService(prisma as never, jwt, buildConfig(CONFIG_VALUES))
+    const service = createService(prisma, jwt)
 
     await expect(service.login({ username: 'alice', password: 'wrong-pwd' })).rejects.toMatchObject({
       response: '账号或密码错误',
@@ -66,7 +71,7 @@ describe('AuthService', () => {
       user: { findUnique: jest.fn().mockResolvedValue(null) },
     }
     const jwt = { signAsync: jest.fn() } as unknown as JwtService
-    const service = new AuthService(prisma as never, jwt, buildConfig(CONFIG_VALUES))
+    const service = createService(prisma, jwt)
 
     await expect(service.login({ username: 'ghost', password: 'anything' })).rejects.toMatchObject({
       response: '账号或密码错误',
@@ -84,7 +89,7 @@ describe('AuthService', () => {
     const jwt = {
       signAsync: jest.fn().mockResolvedValueOnce('access-token').mockResolvedValueOnce('refresh-token'),
     } as unknown as JwtService
-    const service = new AuthService(prisma as never, jwt, buildConfig(CONFIG_VALUES))
+    const service = createService(prisma, jwt)
 
     const result = await service.register({ username: 'alice', password: 'password' })
 
@@ -100,7 +105,7 @@ describe('AuthService', () => {
     const jwt = {
       verifyAsync: jest.fn().mockRejectedValue(new Error('jwt malformed')),
     } as unknown as JwtService
-    const service = new AuthService(prisma as never, jwt, buildConfig(CONFIG_VALUES))
+    const service = createService(prisma, jwt)
 
     await expect(service.refresh('bad-token')).rejects.toMatchObject({
       response: 'Refresh token 无效或已过期',
@@ -116,7 +121,7 @@ describe('AuthService', () => {
     const jwt = {
       verifyAsync: jest.fn().mockResolvedValue({ sub: 'u1', username: 'alice' }),
     } as unknown as JwtService
-    const service = new AuthService(prisma as never, jwt, buildConfig(CONFIG_VALUES))
+    const service = createService(prisma, jwt)
 
     await expect(service.refresh('valid-but-stale')).rejects.toMatchObject({
       response: '用户不存在',
@@ -132,7 +137,7 @@ describe('AuthService', () => {
       verifyAsync: jest.fn().mockResolvedValue({ sub: 'u1', username: 'alice' }),
       signAsync: jest.fn().mockResolvedValueOnce('new-access').mockResolvedValueOnce('new-refresh'),
     } as unknown as JwtService
-    const service = new AuthService(prisma as never, jwt, buildConfig(CONFIG_VALUES))
+    const service = createService(prisma, jwt)
 
     await expect(service.refresh('old-refresh')).resolves.toEqual({
       token: 'new-access',

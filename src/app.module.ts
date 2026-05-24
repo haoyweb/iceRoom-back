@@ -9,6 +9,7 @@ import { FoodModule } from './modules/food/food.module'
 import { FridgeModule } from './modules/fridge/fridge.module'
 import { HealthModule } from './modules/health/health.module'
 import { RecipeSuggestionModule } from './modules/recipe-suggestion/recipe-suggestion.module'
+import { SettingsModule } from './modules/settings/settings.module'
 import { StorageModule } from './modules/storage/storage.module'
 import { UserModule } from './modules/user/user.module'
 import { VisionRecognitionModule } from './modules/vision-recognition/vision-recognition.module'
@@ -36,6 +37,7 @@ import { DatabaseModule } from './database/database.module'
     ]),
     DatabaseModule,
     StorageModule,
+    SettingsModule,
     HealthModule,
     UserModule,
     AuthModule,

@@ -80,6 +80,8 @@ model User {
   // 封禁时间戳与原因，仅供运营查询和审计。unban 时只把 status 改回 active，不清空这两个字段。
   bannedAt              DateTime?
   banReason             String?
+  // 每日拍照识别额度。super_admin 不受此字段限制；0 表示该用户当天不可发起识别。
+  visionDailyLimit      Int                    @default(5)
   createdAt             DateTime               @default(now())
   updatedAt             DateTime               @updatedAt
   fridges               Fridge[]
@@ -176,6 +178,13 @@ model VisionRecognitionJob {
   @@index([userId, createdAt])
   @@index([userId, status, createdAt])
   @@index([fridgeId])
+}
+
+model AppSetting {
+  key       String   @id
+  value     Json
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 model RecipeSuggestionRule {
