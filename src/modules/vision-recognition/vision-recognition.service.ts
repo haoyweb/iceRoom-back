@@ -15,6 +15,7 @@ import { VisionIngredientProviderFactory } from './providers/vision-ingredient-p
 
 const ALLOWED_IMAGE_MIME_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp'])
 const RECOGNITION_IMAGE_RETENTION_DAYS = 90
+const STALE_PENDING_JOB_MS = 90 * 1000
 const CHINA_TIMEZONE_OFFSET_MS = 8 * 60 * 60 * 1000
 
 interface RecognitionImagePayload {
@@ -63,7 +64,10 @@ export class VisionRecognitionService {
   }
 
   async listIngredientJobs(query: VisionRecognitionJobQueryDto, userId: string) {
-    await this.cleanupExpiredImages(userId)
+    await Promise.all([
+      this.cleanupExpiredImages(userId),
+      this.expireStalePendingJobs(userId),
+    ])
     const page = query.page ?? 1
     const pageSize = query.pageSize ?? 20
     const where: Prisma.VisionRecognitionJobWhereInput = {
@@ -326,6 +330,20 @@ export class VisionRecognitionService {
 
   private toArray<T>(value: Prisma.JsonValue | null): T[] {
     return Array.isArray(value) ? value as T[] : []
+  }
+
+  private async expireStalePendingJobs(userId: string) {
+    await this.prisma.visionRecognitionJob.updateMany({
+      where: {
+        userId,
+        status: VisionRecognitionStatus.pending,
+        createdAt: { lt: new Date(Date.now() - STALE_PENDING_JOB_MS) },
+      },
+      data: {
+        status: VisionRecognitionStatus.failed,
+        errorMessage: '识别等待太久了，请换一张更清晰的照片重试',
+      },
+    })
   }
 
   private async cleanupExpiredImages(userId: string) {

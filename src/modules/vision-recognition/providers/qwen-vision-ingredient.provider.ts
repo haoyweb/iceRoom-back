@@ -1,4 +1,4 @@
-import { HttpStatus, Injectable } from '@nestjs/common'
+import { HttpStatus, Injectable, Logger } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
 import { FoodCategory } from '@prisma/client'
 import { BusinessException } from '@/common/errors/business.exception'
@@ -34,6 +34,7 @@ const SOURCE_TYPES = new Set<RecognizedSourceType>(['photo', 'receipt', 'screens
 @Injectable()
 export class QwenVisionIngredientProvider implements VisionIngredientProvider {
   readonly name = 'qwen'
+  private readonly logger = new Logger(QwenVisionIngredientProvider.name)
 
   constructor(private readonly configService: ConfigService) {}
 
@@ -62,7 +63,7 @@ export class QwenVisionIngredientProvider implements VisionIngredientProvider {
           messages: [
             {
               role: 'system',
-              content: '你是面向冰箱库存管理 App 的食材入库识别助手。图片可能是食材实物、超市购物小票、买菜 App/电商订单截图或食品包装。你只识别应该加入冰箱库存的食材/食品，忽略购物袋、配送费、优惠券、满减、会员积分、合计金额、支付金额、订单号、广告推荐商品。类别只能是 vegetable, fruit, meat, egg_milk, staple, seasoning, other。只返回严格 JSON，不要 Markdown。',
+              content: '你是面向冰箱库存管理 App 的食物入库识别助手。图片可能是食物实物、食材原料、超市购物小票、买菜 App/电商订单截图或食品包装。你只识别应该加入冰箱库存的食物或食材，忽略购物袋、配送费、优惠券、满减、会员积分、合计金额、支付金额、订单号、广告推荐商品。类别只能是 vegetable, fruit, meat, egg_milk, staple, seasoning, other。只返回严格 JSON，不要 Markdown。',
             },
             {
               role: 'user',
@@ -87,6 +88,8 @@ export class QwenVisionIngredientProvider implements VisionIngredientProvider {
       })
 
       if (!response.ok) {
+        const errorText = await response.text().catch(() => '')
+        this.logger.error(`[QwenVision] ${response.status} ${response.statusText}: ${errorText.slice(0, 500)}`)
         throw new BusinessException(ErrorCode.INTERNAL_ERROR, '视觉识别服务暂时不可用', HttpStatus.SERVICE_UNAVAILABLE)
       }
 
@@ -125,8 +128,8 @@ export class QwenVisionIngredientProvider implements VisionIngredientProvider {
       `sourceType: ${sourceType}`,
       context ? `context: ${context}` : undefined,
       '请分析图片并判断来源类型：photo, receipt, screenshot, package, unknown。',
-      '最多返回 20 个应该加入冰箱库存的 items。对小票和订单截图，优先解析已购买商品行的商品名、规格、数量和单位；不要识别推荐商品、广告、猜你喜欢。对实物照片，只识别清晰可见的食材，不要猜测被遮挡物。对包装照片，优先读取包装商品名。',
-      '返回 JSON 格式：{"sourceType":"photo|receipt|screenshot|package|unknown","items":[{"name":"鸡蛋","rawName":"本地鲜鸡蛋15枚","category":"egg_milk","quantity":15,"unit":"枚","freshnessDays":14,"confidence":0.9,"note":"请确认保鲜期"}],"ignored":[{"text":"购物袋","reason":"非食材"}],"warnings":[]}',
+      '最多返回 20 个应该加入冰箱库存的 items。对小票和订单截图，优先解析已购买商品行的商品名、规格、数量和单位；不要识别推荐商品、广告、猜你喜欢。对实物照片，识别清晰可见且可冷藏/冷冻保存的食物或食材，不要猜测被遮挡物。对包装照片，优先读取包装商品名。',
+      '返回 JSON 格式：{"sourceType":"photo|receipt|screenshot|package|unknown","items":[{"name":"鸡蛋","rawName":"本地鲜鸡蛋15枚","category":"egg_milk","quantity":15,"unit":"枚","freshnessDays":14,"confidence":0.9,"note":"请确认保鲜期"}],"ignored":[{"text":"购物袋","reason":"非食物/食材"}],"warnings":[]}',
       '如果数量或单位无法确定，省略对应字段。保鲜期无法确定时可按常识估计 freshnessDays，但必须在 note 中提示请确认。不要返回 Markdown，只返回 JSON。',
     ].filter(Boolean).join('\n')
   }
@@ -134,7 +137,7 @@ export class QwenVisionIngredientProvider implements VisionIngredientProvider {
   private normalizeResult(content: string): Pick<RecognizeIngredientsResultDto, 'sourceType' | 'items' | 'ignored' | 'warnings'> {
     let raw: RawRecognitionResult
     try {
-      raw = JSON.parse(content) as RawRecognitionResult
+      raw = JSON.parse(this.extractJsonObject(content)) as RawRecognitionResult
     }
     catch {
       throw new BusinessException(ErrorCode.INTERNAL_ERROR, '视觉识别结果格式异常', HttpStatus.BAD_GATEWAY)
@@ -152,6 +155,15 @@ export class QwenVisionIngredientProvider implements VisionIngredientProvider {
       : []
 
     return { sourceType, items, ignored, warnings }
+  }
+
+  private extractJsonObject(content: string) {
+    const trimmed = content.trim()
+    const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i)
+    const candidate = fenced?.[1]?.trim() ?? trimmed
+    const start = candidate.indexOf('{')
+    const end = candidate.lastIndexOf('}')
+    return start >= 0 && end > start ? candidate.slice(start, end + 1) : candidate
   }
 
   private normalizeItem(value: unknown): RecognizedIngredientDto | null {
