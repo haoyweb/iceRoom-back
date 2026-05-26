@@ -1,12 +1,15 @@
 import { Body, Controller, Get, HttpCode, HttpStatus, Param, Patch, Post, Query, UseGuards } from '@nestjs/common'
 import { ApiOkResponse, ApiTags } from '@nestjs/swagger'
+import { UserRole } from '@prisma/client'
 import { CurrentUser } from '@/common/decorators/current-user.decorator'
+import { Roles } from '../decorators/roles.decorator'
 import { AdminGuard } from '../guards/admin.guard'
 import { RolesGuard } from '../guards/roles.guard'
 import { AdminUsersService } from './admin-users.service'
 import { BanUserDto } from './dto/ban-user.dto'
 import { ListUsersQueryDto } from './dto/list-users.query.dto'
 import { ResetPasswordDto } from './dto/reset-password.dto'
+import { UpdateUserRoleDto } from './dto/update-user-role.dto'
 import { UpdateVisionDailyLimitDto } from './dto/update-vision-daily-limit.dto'
 
 @ApiTags('admin-users')
@@ -42,6 +45,7 @@ export class AdminUsersController {
   }
 
   @Post(':id/reset-password')
+  @Roles(UserRole.super_admin)
   @HttpCode(HttpStatus.OK)
   @ApiOkResponse({ description: '重置用户密码' })
   resetPassword(
@@ -53,6 +57,7 @@ export class AdminUsersController {
   }
 
   @Patch(':id/vision-daily-limit')
+  @Roles(UserRole.super_admin)
   @ApiOkResponse({ description: '设置用户每日拍照识别额度' })
   updateVisionDailyLimit(
     @Param('id') id: string,
@@ -60,5 +65,16 @@ export class AdminUsersController {
     @CurrentUser('id') operatorId: string,
   ) {
     return this.service.updateVisionDailyLimit(id, dto, operatorId)
+  }
+
+  @Patch(':id/role')
+  @Roles(UserRole.super_admin)
+  @ApiOkResponse({ description: '修改用户角色' })
+  updateRole(
+    @Param('id') id: string,
+    @Body() dto: UpdateUserRoleDto,
+    @CurrentUser('id') operatorId: string,
+  ) {
+    return this.service.updateRole(id, dto, operatorId)
   }
 }

@@ -9,6 +9,7 @@ import { PrismaService } from '@/database/prisma.service'
 import type { BanUserDto } from './dto/ban-user.dto'
 import type { ListUsersQueryDto } from './dto/list-users.query.dto'
 import type { ResetPasswordDto } from './dto/reset-password.dto'
+import type { UpdateUserRoleDto } from './dto/update-user-role.dto'
 import type { UpdateVisionDailyLimitDto } from './dto/update-vision-daily-limit.dto'
 
 /**
@@ -190,6 +191,43 @@ export class AdminUsersService {
       select: { id: true, visionDailyLimit: true },
     })
     return updated
+  }
+
+  async updateRole(id: string, dto: UpdateUserRoleDto, operatorId: string) {
+    const target = await this.assertCanUpdateRole(id, operatorId, dto.role)
+    if (target.role === dto.role) {
+      return { id: target.id, role: target.role }
+    }
+
+    const updated = await this.prisma.user.update({
+      where: { id },
+      data: { role: dto.role },
+      select: { id: true, role: true },
+    })
+    return updated
+  }
+
+  private async assertCanUpdateRole(targetId: string, operatorId: string, nextRole: UserRole) {
+    if (targetId === operatorId) {
+      throw new BusinessException(ErrorCode.FORBIDDEN, '不能修改自己的角色', HttpStatus.FORBIDDEN)
+    }
+
+    const target = await this.prisma.user.findUnique({
+      where: { id: targetId },
+      select: { id: true, role: true, status: true },
+    })
+
+    if (!target) {
+      throw new BusinessException(ErrorCode.USER_NOT_FOUND, '用户不存在', HttpStatus.NOT_FOUND)
+    }
+    if (target.role === UserRole.super_admin) {
+      throw new BusinessException(ErrorCode.FORBIDDEN, 'super_admin 角色不能在后台修改', HttpStatus.FORBIDDEN)
+    }
+    if (target.status === UserStatus.banned && nextRole !== UserRole.user) {
+      throw new BusinessException(ErrorCode.FORBIDDEN, '已封禁用户不能提权，请先解封', HttpStatus.FORBIDDEN)
+    }
+
+    return target
   }
 
   /**
