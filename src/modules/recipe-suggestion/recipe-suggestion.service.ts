@@ -10,7 +10,7 @@ import { FoodReminderService } from '../food/food-reminder.service'
 import { RecipeOrderBy } from './dto/recipe-list-query.dto'
 import type { RecipeListQueryDto } from './dto/recipe-list-query.dto'
 
-interface FoodWithExpiryInfo extends Pick<FoodItem, 'id' | 'name' | 'expireDate'> {
+interface FoodWithExpiryInfo extends Pick<FoodItem, 'id' | 'name' | 'expireDate' | 'quantity' | 'unit'> {
   daysToExpire: number
   expiryLevel: FoodExpiryLevel
 }
@@ -163,7 +163,7 @@ export class RecipeSuggestionService {
           },
         },
       },
-      select: { id: true, name: true, expireDate: true },
+      select: { id: true, name: true, expireDate: true, quantity: true, unit: true },
     })
     const foodMap = new Map<string, FoodWithExpiryInfo[]>()
 
@@ -190,6 +190,8 @@ export class RecipeSuggestionService {
         expireDate: food.expireDate.toISOString(),
         daysToExpire: food.daysToExpire,
         expiryLevel: food.expiryLevel,
+        quantity: food.quantity?.toNumber() ?? null,
+        unit: food.unit,
       })),
       usedExpiringFoodIds,
       expiringScore,

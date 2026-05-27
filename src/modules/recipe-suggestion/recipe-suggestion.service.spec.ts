@@ -1,5 +1,5 @@
 import { HttpStatus } from '@nestjs/common'
-import { RecipeDifficulty } from '@prisma/client'
+import { Prisma, RecipeDifficulty } from '@prisma/client'
 import { RecipeSuggestionService } from './recipe-suggestion.service'
 
 describe('RecipeSuggestionService', () => {
@@ -48,11 +48,11 @@ describe('RecipeSuggestionService', () => {
     const later = new Date()
     later.setDate(later.getDate() + 20)
     const prisma = {
-      fridge: { findUnique: jest.fn().mockResolvedValue({ id: 'fridge_1' }) },
+      fridge: { findUnique: jest.fn().mockResolvedValue({ id: 'fridge_1', userId: 'user_1' }) },
       foodItem: {
         findMany: jest.fn().mockResolvedValue([
-          { id: 'food_tomato', name: '番茄', expireDate: soon },
-          { id: 'food_egg', name: '鸡蛋', expireDate: later },
+          { id: 'food_tomato', name: '番茄', expireDate: soon, quantity: new Prisma.Decimal(2), unit: '个' },
+          { id: 'food_egg', name: '鸡蛋', expireDate: later, quantity: new Prisma.Decimal(6), unit: '个' },
         ]),
       },
       recipeSuggestionRule: {
@@ -77,7 +77,10 @@ describe('RecipeSuggestionService', () => {
     expect(result[0]?.matchedIngredients).toEqual(['番茄', '鸡蛋'])
     expect(result[0]?.missingIngredients).toEqual([])
     expect(result[0]?.usedExpiringFoodIds).toEqual(['food_tomato'])
-    expect(result[0]?.matchedFoods).toEqual(expect.arrayContaining([expect.objectContaining({ id: 'food_tomato', expiryLevel: 'within3Days' })]))
+    expect(result[0]?.matchedFoods).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'food_tomato', expiryLevel: 'within3Days', quantity: 2, unit: '个' }),
+      expect.objectContaining({ id: 'food_egg', quantity: 6, unit: '个' }),
+    ]))
   })
 
   it('sorts by expiring score before popularity', async () => {
@@ -86,11 +89,11 @@ describe('RecipeSuggestionService', () => {
     const later = new Date()
     later.setDate(later.getDate() + 20)
     const prisma = {
-      fridge: { findUnique: jest.fn().mockResolvedValue({ id: 'fridge_1' }) },
+      fridge: { findUnique: jest.fn().mockResolvedValue({ id: 'fridge_1', userId: 'user_1' }) },
       foodItem: {
         findMany: jest.fn().mockResolvedValue([
-          { id: 'food_tomato', name: '番茄', expireDate: soon },
-          { id: 'food_egg', name: '鸡蛋', expireDate: later },
+          { id: 'food_tomato', name: '番茄', expireDate: soon, quantity: new Prisma.Decimal(2), unit: '个' },
+          { id: 'food_egg', name: '鸡蛋', expireDate: later, quantity: new Prisma.Decimal(6), unit: '个' },
         ]),
       },
       recipeSuggestionRule: {
