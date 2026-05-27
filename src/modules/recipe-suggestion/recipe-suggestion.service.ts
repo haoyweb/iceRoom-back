@@ -6,6 +6,7 @@ import { ErrorCode } from '@/common/errors/error-code.enum'
 import type { FoodExpiryLevel } from '@/common/utils/expiry'
 import { getExpiryScore, withExpiryInfo } from '@/common/utils/expiry'
 import { PrismaService } from '@/database/prisma.service'
+import { FoodReminderService } from '../food/food-reminder.service'
 import { RecipeOrderBy } from './dto/recipe-list-query.dto'
 import type { RecipeListQueryDto } from './dto/recipe-list-query.dto'
 
@@ -142,17 +143,25 @@ export class RecipeSuggestionService {
   private async getFoodMapByFridge(fridgeId: string) {
     const fridge = await this.prisma.fridge.findUnique({
       where: { id: fridgeId },
-      select: { id: true },
+      // 多 select userId，是为了下面拼 reminder 过滤 where；不另起一次 query。
+      select: { id: true, userId: true },
     })
 
     if (!fridge) {
       throw new BusinessException(ErrorCode.FRIDGE_NOT_FOUND, '冰箱不存在', HttpStatus.NOT_FOUND)
     }
 
+    // 被该用户「忽略 / 延后中」的食材直接从匹配池剔除，菜谱推荐里也不再出现，
+    // 跟首页临期列表保持同一份过滤口径。
     const foods = await this.prisma.foodItem.findMany({
       where: {
         fridgeId,
         status: 'normal',
+        NOT: {
+          reminders: {
+            some: FoodReminderService.buildActiveReminderFilter(fridge.userId),
+          },
+        },
       },
       select: { id: true, name: true, expireDate: true },
     })

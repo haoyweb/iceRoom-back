@@ -47,6 +47,13 @@ enum VisionRecognitionStatus {
   failed
 }
 
+// 食材提醒动作。ignore = 用户主动「不再提醒」；snooze = 临时「先放一放」直到 snoozedUntil。
+// 不在表上设 expired/active 状态——是否生效完全由 action + snoozedUntil 即时推导，避免后台定时任务清理。
+enum FoodReminderAction {
+  ignore
+  snooze
+}
+
 // 用户角色。普通用户默认 user；运营后台访问需要 admin 或 super_admin。
 // super_admin 是「兜底位」——只能由 super_admin 操作，避免互相误降权造成无人可恢复的状态。
 enum UserRole {
@@ -86,6 +93,7 @@ model User {
   updatedAt             DateTime               @updatedAt
   fridges               Fridge[]
   visionRecognitionJobs VisionRecognitionJob[]
+  foodReminders         FoodReminder[]
 
   @@index([role])
   @@index([status])
@@ -139,10 +147,32 @@ model FoodItem {
   // 层位删除策略：业务层在 FridgeService.removeShelf 中已拒绝"带食材删层位"，
   // DB 层显式 Restrict 是兜底，防止任何代码绕过业务校验时静默删除食材。
   shelf            StorageShelf     @relation(fields: [shelfId], references: [id], onDelete: Restrict)
+  reminders        FoodReminder[]
 
   @@index([fridgeId, expireDate])
   @@index([shelfId])
   @@index([status])
+}
+
+// 单个用户对单件食材的提醒偏好。一条记录可能是「永久忽略」或「暂时延后」。
+// 与 FoodItem 一比一对应（@@unique([userId, foodId])），重复调 ignore/snooze 走 upsert。
+// 删除 food/user 时级联清理，不会留孤儿记录。
+model FoodReminder {
+  id           String             @id @default(cuid())
+  userId       String
+  foodId       String
+  action       FoodReminderAction
+  // snooze 时记录到期时间；ignore 永久生效，snoozedUntil 留 null。
+  // 是否「生效」由查询端实时判断：action=ignore 或 (action=snooze AND snoozedUntil > now)。
+  snoozedUntil DateTime?
+  createdAt    DateTime           @default(now())
+  updatedAt    DateTime           @updatedAt
+  user         User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  food         FoodItem           @relation(fields: [foodId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, foodId])
+  @@index([userId])
+  @@index([foodId])
 }
 
 model VisionRecognitionJob {

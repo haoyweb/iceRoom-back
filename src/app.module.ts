@@ -8,6 +8,7 @@ import { JwtAuthGuard } from './modules/auth/guards/jwt-auth.guard'
 import { FoodModule } from './modules/food/food.module'
 import { FridgeModule } from './modules/fridge/fridge.module'
 import { HealthModule } from './modules/health/health.module'
+import { HomeModule } from './modules/home/home.module'
 import { RecipeSuggestionModule } from './modules/recipe-suggestion/recipe-suggestion.module'
 import { SettingsModule } from './modules/settings/settings.module'
 import { StorageModule } from './modules/storage/storage.module'
@@ -44,6 +45,7 @@ import { DatabaseModule } from './database/database.module'
     FridgeModule,
     FoodModule,
     RecipeSuggestionModule,
+    HomeModule,
     VisionRecognitionModule,
     AdminModule,
   ],

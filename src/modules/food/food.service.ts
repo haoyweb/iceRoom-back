@@ -7,6 +7,7 @@ import { withExpiryInfo } from '@/common/utils/expiry'
 import { PrismaService } from '@/database/prisma.service'
 import { FridgeService } from '../fridge/fridge.service'
 import { calculateExpireDate, getFreshnessDays } from './food-freshness.constants'
+import { FoodReminderService } from './food-reminder.service'
 import type { ConsumeFoodBatchDto } from './dto/consume-food-batch.dto'
 import type { CreateFoodDto } from './dto/create-food.dto'
 import type { ExpiringFoodQueryDto } from './dto/expiring-food-query.dto'
@@ -225,6 +226,8 @@ export class FoodService {
       await this.fridgeService.ensureFridgeOwnedByUser(query.fridgeId, userId)
     }
 
+    // 过滤被「忽略 / 延后中」的食材：用户对该食材有 ignore，或 snooze 未到期，
+    // 都从临期列表里隐去。判定逻辑统一封在 FoodReminderService.buildActiveReminderFilter。
     const where: Prisma.FoodItemWhereInput = {
       fridge: { userId },
       ...(query.fridgeId ? { fridgeId: query.fridgeId } : {}),
@@ -232,6 +235,11 @@ export class FoodService {
       expireDate: {
         ...(includeExpired ? {} : { gte: this.startOfToday() }),
         lte: end,
+      },
+      NOT: {
+        reminders: {
+          some: FoodReminderService.buildActiveReminderFilter(userId),
+        },
       },
     }
 
