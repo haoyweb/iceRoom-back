@@ -163,6 +163,7 @@ export class RecipeSuggestionService {
           },
         },
       },
+      orderBy: [{ expireDate: 'asc' }, { createdAt: 'asc' }],
       select: { id: true, name: true, expireDate: true, quantity: true, unit: true },
     })
     const foodMap = new Map<string, FoodWithExpiryInfo[]>()

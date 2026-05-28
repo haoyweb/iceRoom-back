@@ -46,7 +46,7 @@ export class FoodService {
       this.prisma.foodItem.findMany({
         where,
         include: { shelf: true },
-        orderBy: { expireDate: 'asc' },
+        orderBy: [{ expireDate: 'asc' }, { createdAt: 'asc' }],
         skip: (page - 1) * pageSize,
         take: pageSize,
       }),
@@ -247,7 +247,7 @@ export class FoodService {
       this.prisma.foodItem.findMany({
         where,
         include: { shelf: true },
-        orderBy: { expireDate: 'asc' },
+        orderBy: [{ expireDate: 'asc' }, { createdAt: 'asc' }],
         skip: (page - 1) * pageSize,
         take: pageSize,
       }),
