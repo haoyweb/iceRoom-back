@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common'
-import { FoodReminderAction, Prisma } from '@prisma/client'
+import { FoodReminderAction, NotificationStatus, NotificationType, Prisma } from '@prisma/client'
 import { PrismaService } from '@/database/prisma.service'
 import { FoodService } from './food.service'
 
@@ -27,11 +27,15 @@ export class FoodReminderService {
   async ignore(foodId: string, userId: string) {
     await this.foodService.ensureFoodExistsForUser(foodId, userId)
 
-    return this.prisma.foodReminder.upsert({
+    const reminder = await this.prisma.foodReminder.upsert({
       where: { userId_foodId: { userId, foodId } },
       create: { userId, foodId, action: FoodReminderAction.ignore, snoozedUntil: null },
       update: { action: FoodReminderAction.ignore, snoozedUntil: null },
     })
+
+    await this.markFoodExpiringNotificationRead(userId, foodId)
+
+    return reminder
   }
 
   async snooze(foodId: string, userId: string, snoozeHours: number) {
@@ -39,11 +43,15 @@ export class FoodReminderService {
 
     const snoozedUntil = new Date(Date.now() + snoozeHours * 60 * 60 * 1000)
 
-    return this.prisma.foodReminder.upsert({
+    const reminder = await this.prisma.foodReminder.upsert({
       where: { userId_foodId: { userId, foodId } },
       create: { userId, foodId, action: FoodReminderAction.snooze, snoozedUntil },
       update: { action: FoodReminderAction.snooze, snoozedUntil },
     })
+
+    await this.markFoodExpiringNotificationRead(userId, foodId)
+
+    return reminder
   }
 
   async restore(foodId: string, userId: string) {
@@ -78,5 +86,16 @@ export class FoodReminderService {
         { action: FoodReminderAction.snooze, snoozedUntil: { gt: now } },
       ],
     }
+  }
+
+  private async markFoodExpiringNotificationRead(userId: string, foodId: string) {
+    await this.prisma.notification.updateMany({
+      where: {
+        userId,
+        dedupeKey: `${NotificationType.food_expiring}:${foodId}`,
+        status: NotificationStatus.unread,
+      },
+      data: { status: NotificationStatus.read, readAt: new Date() },
+    })
   }
 }

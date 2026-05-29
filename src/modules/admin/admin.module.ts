@@ -1,9 +1,11 @@
 import { Module } from '@nestjs/common'
+import { SettingsModule } from '../settings/settings.module'
 import { AdminDashboardController } from './dashboard/admin-dashboard.controller'
 import { AdminDashboardService } from './dashboard/admin-dashboard.service'
 import { AdminGuard } from './guards/admin.guard'
 import { RolesGuard } from './guards/roles.guard'
-import { SettingsModule } from '../settings/settings.module'
+import { AdminNotificationsController } from './notifications/admin-notifications.controller'
+import { AdminNotificationsService } from './notifications/admin-notifications.service'
 import { AdminRecipesController } from './recipes/admin-recipes.controller'
 import { AdminRecipesService } from './recipes/admin-recipes.service'
 import { AdminSettingsController } from './settings/admin-settings.controller'
@@ -31,6 +33,7 @@ import { AdminVisionJobsService } from './vision-jobs/admin-vision-jobs.service'
     AdminVisionJobsController,
     AdminDashboardController,
     AdminSettingsController,
+    AdminNotificationsController,
   ],
   providers: [
     AdminGuard,
@@ -40,6 +43,7 @@ import { AdminVisionJobsService } from './vision-jobs/admin-vision-jobs.service'
     AdminVisionJobsService,
     AdminDashboardService,
     AdminSettingsService,
+    AdminNotificationsService,
   ],
 })
 export class AdminModule {}
