@@ -40,6 +40,37 @@ describe('FoodReminderService', () => {
     })
   })
 
+  it('restores food reminder preference idempotently', async () => {
+    const foodService = makeFoodService()
+    const prisma = {
+      foodReminder: {
+        deleteMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+    }
+    const service = new FoodReminderService(prisma as never, foodService as never)
+
+    await expect(service.restore(FOOD_ID, USER_ID)).resolves.toEqual({ success: true })
+    expect(foodService.ensureFoodExistsForUser).toHaveBeenCalledWith(FOOD_ID, USER_ID)
+    expect(prisma.foodReminder.deleteMany).toHaveBeenCalledWith({
+      where: { userId: USER_ID, foodId: FOOD_ID },
+    })
+  })
+
+  it('does not delete reminder when restore ownership check fails', async () => {
+    const foodService = {
+      ensureFoodExistsForUser: jest.fn().mockRejectedValue(new Error('forbidden')),
+    }
+    const prisma = {
+      foodReminder: {
+        deleteMany: jest.fn(),
+      },
+    }
+    const service = new FoodReminderService(prisma as never, foodService as never)
+
+    await expect(service.restore(FOOD_ID, USER_ID)).rejects.toThrow('forbidden')
+    expect(prisma.foodReminder.deleteMany).not.toHaveBeenCalled()
+  })
+
   it('marks matching food expiring notification as read after snooze', async () => {
     const snoozedUntil = new Date('2026-05-30T08:00:00.000Z')
     const prisma = {

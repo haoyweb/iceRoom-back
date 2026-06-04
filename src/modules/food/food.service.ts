@@ -1,5 +1,5 @@
 import { HttpStatus, Injectable } from '@nestjs/common'
-import { ExpireDateSource, FoodStatus, Prisma, StorageArea } from '@prisma/client'
+import { ExpireDateSource, FoodReminderAction, FoodStatus, Prisma, StorageArea } from '@prisma/client'
 import { createPageResult } from '@/common/dto/page.dto'
 import { BusinessException } from '@/common/errors/business.exception'
 import { ErrorCode } from '@/common/errors/error-code.enum'
@@ -70,7 +70,15 @@ export class FoodService {
       throw new BusinessException(ErrorCode.FORBIDDEN, '无权访问该食材', HttpStatus.FORBIDDEN)
     }
 
-    return this.withExpiryLevel(food)
+    const reminder = await this.prisma.foodReminder.findUnique({
+      where: { userId_foodId: { userId, foodId: id } },
+      select: { action: true, snoozedUntil: true },
+    })
+
+    return {
+      ...this.withExpiryLevel(food),
+      reminder: this.toActiveReminderState(reminder),
+    }
   }
 
   async create(data: CreateFoodDto, userId: string) {
@@ -353,6 +361,21 @@ export class FoodService {
 
   private withExpiryLevel<T extends { expireDate: Date }>(item: T) {
     return withExpiryInfo(item)
+  }
+
+  private toActiveReminderState(reminder: { action: FoodReminderAction, snoozedUntil: Date | null } | null) {
+    if (!reminder)
+      return null
+
+    if (reminder.action === FoodReminderAction.ignore) {
+      return { action: reminder.action, snoozedUntil: null }
+    }
+
+    if (reminder.snoozedUntil && reminder.snoozedUntil > new Date()) {
+      return { action: reminder.action, snoozedUntil: reminder.snoozedUntil }
+    }
+
+    return null
   }
 
   private startOfToday() {

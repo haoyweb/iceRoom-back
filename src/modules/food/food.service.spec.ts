@@ -1,5 +1,5 @@
 import { HttpStatus } from '@nestjs/common'
-import { ExpireDateSource, FoodStatus, Prisma, StorageArea } from '@prisma/client'
+import { ExpireDateSource, FoodReminderAction, FoodStatus, Prisma, StorageArea } from '@prisma/client'
 import { FoodService } from './food.service'
 
 /**
@@ -15,6 +15,105 @@ const makeFridgeService = () => ({
 const USER_ID = 'user_1'
 
 describe('FoodService', () => {
+  beforeEach(() => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-05-29T08:00:00.000Z'))
+  })
+
+  afterEach(() => {
+    jest.useRealTimers()
+  })
+
+  function createFoodDetail(overrides: Record<string, unknown> = {}) {
+    return {
+      id: 'food_1',
+      fridgeId: 'fridge_1',
+      shelfId: 'shelf_1',
+      name: '牛奶',
+      category: 'egg_milk',
+      quantity: null,
+      unit: '盒',
+      purchaseDate: null,
+      expireDate: new Date('2026-05-30T00:00:00.000Z'),
+      expireDateSource: ExpireDateSource.manual,
+      status: FoodStatus.normal,
+      note: null,
+      createdAt: new Date('2026-05-28T00:00:00.000Z'),
+      updatedAt: new Date('2026-05-28T00:00:00.000Z'),
+      shelf: { id: 'shelf_1' },
+      fridge: { id: 'fridge_1', userId: USER_ID },
+      ...overrides,
+    }
+  }
+
+  it('returns null reminder state when detail has no active reminder', async () => {
+    const prisma = {
+      foodItem: { findUnique: jest.fn().mockResolvedValue(createFoodDetail()) },
+      foodReminder: { findUnique: jest.fn().mockResolvedValue(null) },
+    }
+    const service = new FoodService(prisma as never, makeFridgeService() as never)
+
+    await expect(service.getById('food_1', USER_ID)).resolves.toEqual(expect.objectContaining({
+      id: 'food_1',
+      reminder: null,
+      expiryLevel: 'within3Days',
+    }))
+    expect(prisma.foodReminder.findUnique).toHaveBeenCalledWith({
+      where: { userId_foodId: { userId: USER_ID, foodId: 'food_1' } },
+      select: { action: true, snoozedUntil: true },
+    })
+  })
+
+  it('returns ignored reminder state on detail', async () => {
+    const prisma = {
+      foodItem: { findUnique: jest.fn().mockResolvedValue(createFoodDetail()) },
+      foodReminder: { findUnique: jest.fn().mockResolvedValue({ action: FoodReminderAction.ignore, snoozedUntil: null }) },
+    }
+    const service = new FoodService(prisma as never, makeFridgeService() as never)
+
+    await expect(service.getById('food_1', USER_ID)).resolves.toEqual(expect.objectContaining({
+      reminder: { action: FoodReminderAction.ignore, snoozedUntil: null },
+    }))
+  })
+
+  it('returns active snoozed reminder state on detail', async () => {
+    const snoozedUntil = new Date('2026-05-30T08:00:00.000Z')
+    const prisma = {
+      foodItem: { findUnique: jest.fn().mockResolvedValue(createFoodDetail()) },
+      foodReminder: { findUnique: jest.fn().mockResolvedValue({ action: FoodReminderAction.snooze, snoozedUntil }) },
+    }
+    const service = new FoodService(prisma as never, makeFridgeService() as never)
+
+    await expect(service.getById('food_1', USER_ID)).resolves.toEqual(expect.objectContaining({
+      reminder: { action: FoodReminderAction.snooze, snoozedUntil },
+    }))
+  })
+
+  it('treats expired snooze reminder as inactive on detail', async () => {
+    const prisma = {
+      foodItem: { findUnique: jest.fn().mockResolvedValue(createFoodDetail()) },
+      foodReminder: { findUnique: jest.fn().mockResolvedValue({ action: FoodReminderAction.snooze, snoozedUntil: new Date('2026-05-29T07:59:59.999Z') }) },
+    }
+    const service = new FoodService(prisma as never, makeFridgeService() as never)
+
+    await expect(service.getById('food_1', USER_ID)).resolves.toEqual(expect.objectContaining({
+      reminder: null,
+    }))
+  })
+
+  it('does not query reminder state when detail belongs to another user', async () => {
+    const prisma = {
+      foodItem: { findUnique: jest.fn().mockResolvedValue(createFoodDetail({ fridge: { id: 'fridge_1', userId: 'user_other' } })) },
+      foodReminder: { findUnique: jest.fn() },
+    }
+    const service = new FoodService(prisma as never, makeFridgeService() as never)
+
+    await expect(service.getById('food_1', USER_ID)).rejects.toMatchObject({
+      response: '无权访问该食材',
+      status: HttpStatus.FORBIDDEN,
+    })
+    expect(prisma.foodReminder.findUnique).not.toHaveBeenCalled()
+  })
+
   it('marks expired food by expire date', async () => {
     const findMany = jest.fn<Promise<Array<{ id: string, expireDate: Date }>>, [Prisma.FoodItemFindManyArgs]>().mockResolvedValue([
       { id: 'food_1', expireDate: new Date('2020-01-01T00:00:00.000Z') },
