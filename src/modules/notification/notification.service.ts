@@ -3,11 +3,16 @@ import { FoodStatus, NotificationStatus, NotificationTargetType, NotificationTyp
 import { createPageResult } from '@/common/dto/page.dto'
 import { BusinessException } from '@/common/errors/business.exception'
 import { ErrorCode } from '@/common/errors/error-code.enum'
-import { getDaysToExpire } from '@/common/utils/expiry'
 import { PrismaService } from '@/database/prisma.service'
 import { FoodReminderService } from '../food/food-reminder.service'
 import type { MarkAllNotificationsReadDto } from './dto/mark-all-notifications-read.dto'
 import type { NotificationQueryDto } from './dto/notification-query.dto'
+import {
+  buildFoodExpiringNotificationPayload,
+  FOOD_EXPIRING_REMINDER_WINDOW_DAYS,
+  foodExpiringDedupeKey,
+  shouldReopenFoodExpiringNotification,
+} from './food-expiring-notification.policy'
 
 @Injectable()
 export class NotificationService {
@@ -85,7 +90,7 @@ export class NotificationService {
     await this.prisma.notification.updateMany({
       where: {
         userId,
-        dedupeKey: this.foodExpiringDedupeKey(foodId),
+        dedupeKey: foodExpiringDedupeKey(foodId),
         status: NotificationStatus.unread,
       },
       data: { status: NotificationStatus.read, readAt: new Date() },
@@ -95,7 +100,7 @@ export class NotificationService {
   private async syncFoodExpiringNotifications(userId: string) {
     const end = new Date()
     end.setHours(23, 59, 59, 999)
-    end.setDate(end.getDate() + 7)
+    end.setDate(end.getDate() + FOOD_EXPIRING_REMINDER_WINDOW_DAYS)
 
     const foods = await this.prisma.foodItem.findMany({
       where: {
@@ -139,78 +144,55 @@ export class NotificationService {
       data: { status: NotificationStatus.read, readAt: new Date() },
     })
 
-    await Promise.all(
-      foods.map((food) => {
-        const daysToExpire = getDaysToExpire(food.expireDate)
-        const payload = this.buildFoodExpiringPayload(food.name, daysToExpire)
-
-        return this.prisma.notification.upsert({
-          where: { userId_dedupeKey: { userId, dedupeKey: this.foodExpiringDedupeKey(food.id) } },
-          create: {
+    const existingNotifications = activeFoodIds.length > 0
+      ? await this.prisma.notification.findMany({
+          where: {
             userId,
-            type: NotificationType.food_expiring,
-            title: payload.title,
-            content: payload.content,
-            targetType: NotificationTargetType.food,
-            targetId: food.id,
-            dedupeKey: this.foodExpiringDedupeKey(food.id),
-            metadata: {
-              foodId: food.id,
-              foodName: food.name,
-              fridgeId: food.fridgeId,
-              shelfId: food.shelfId,
-              expireDate: food.expireDate.toISOString(),
-              daysToExpire,
-            },
+            dedupeKey: { in: activeFoodIds.map(foodExpiringDedupeKey) },
           },
-          update: {
-            title: payload.title,
-            content: payload.content,
-            targetType: NotificationTargetType.food,
-            targetId: food.id,
-            metadata: {
-              foodId: food.id,
-              foodName: food.name,
-              fridgeId: food.fridgeId,
-              shelfId: food.shelfId,
-              expireDate: food.expireDate.toISOString(),
-              daysToExpire,
-            },
+          select: {
+            dedupeKey: true,
+            status: true,
+            metadata: true,
           },
         })
-      }),
-    )
-  }
+      : []
+    const existingByDedupeKey = new Map(existingNotifications.map(notification => [notification.dedupeKey, notification]))
 
-  private foodExpiringDedupeKey(foodId: string) {
-    return `${NotificationType.food_expiring}:${foodId}`
-  }
+    const upserts = foods.flatMap((food) => {
+      const dedupeKey = foodExpiringDedupeKey(food.id)
+      const payload = buildFoodExpiringNotificationPayload(food)
 
-  private buildFoodExpiringPayload(foodName: string, daysToExpire: number) {
-    if (daysToExpire < 0) {
-      return {
-        title: `「${foodName}」已过期，建议尽快确认`,
-        content: '这件食材已经超过保鲜期，可以确认是否还能使用，或及时标记为丢弃。',
+      if (!payload) {
+        return []
       }
-    }
 
-    if (daysToExpire === 0) {
-      return {
-        title: `「${foodName}」今天到期`,
-        content: '这件食材今天到期，可以优先安排到今天的菜谱中。',
+      const shouldReopen = shouldReopenFoodExpiringNotification(existingByDedupeKey.get(dedupeKey), payload.metadata.severity)
+      const update: Prisma.NotificationUpdateInput = {
+        title: payload.title,
+        content: payload.content,
+        targetType: NotificationTargetType.food,
+        targetId: food.id,
+        metadata: payload.metadata,
+        ...(shouldReopen ? { status: NotificationStatus.unread, readAt: null } : {}),
       }
-    }
 
-    if (daysToExpire <= 3) {
-      return {
-        title: `「${foodName}」将在 3 天内到期`,
-        content: `这件食材还有 ${daysToExpire} 天到期，可以优先安排到最近的菜谱中。`,
-      }
-    }
+      return this.prisma.notification.upsert({
+        where: { userId_dedupeKey: { userId, dedupeKey } },
+        create: {
+          userId,
+          type: NotificationType.food_expiring,
+          title: payload.title,
+          content: payload.content,
+          targetType: NotificationTargetType.food,
+          targetId: food.id,
+          dedupeKey,
+          metadata: payload.metadata,
+        },
+        update,
+      })
+    })
 
-    return {
-      title: `「${foodName}」即将到期`,
-      content: `这件食材还有 ${daysToExpire} 天到期，记得提前安排使用。`,
-    }
+    await Promise.all(upserts)
   }
 }

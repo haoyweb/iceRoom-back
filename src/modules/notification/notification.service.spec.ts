@@ -5,7 +5,9 @@ import { NotificationService } from './notification.service'
 const USER_ID = 'user_1'
 const NOW = new Date('2026-05-29T08:00:00.000Z')
 
-function createFood(overrides: Partial<{ id: string, name: string, expireDate: Date, fridgeId: string, shelfId: string }> = {}) {
+type FoodOverrides = Partial<{ id: string, name: string, expireDate: Date, fridgeId: string, shelfId: string | null }>
+
+function createFood(overrides: FoodOverrides = {}) {
   return {
     id: overrides.id ?? 'food_1',
     name: overrides.name ?? '牛奶',
@@ -48,7 +50,25 @@ function expectedExpiringFoodQuery() {
   }
 }
 
-function expectedFoodNotificationUpsert(food = createFood()) {
+function expectedMetadata(food = createFood(), overrides: Partial<Record<string, unknown>> = {}) {
+  return {
+    foodId: food.id,
+    foodName: food.name,
+    fridgeId: food.fridgeId,
+    shelfId: food.shelfId,
+    expireDate: food.expireDate.toISOString(),
+    daysToExpire: 1,
+    expiryLevel: 'within3Days',
+    severity: 'warning',
+    reminderWindowDays: 7,
+    generatedReason: 'food_expiring',
+    ...overrides,
+  }
+}
+
+function expectedFoodNotificationUpsert(food = createFood(), updateOverrides: Record<string, unknown> = {}) {
+  const metadata = expectedMetadata(food)
+
   return {
     where: { userId_dedupeKey: { userId: USER_ID, dedupeKey: `food_expiring:${food.id}` } },
     create: {
@@ -59,28 +79,31 @@ function expectedFoodNotificationUpsert(food = createFood()) {
       targetType: NotificationTargetType.food,
       targetId: food.id,
       dedupeKey: `food_expiring:${food.id}`,
-      metadata: {
-        foodId: food.id,
-        foodName: food.name,
-        fridgeId: food.fridgeId,
-        shelfId: food.shelfId,
-        expireDate: food.expireDate.toISOString(),
-        daysToExpire: 1,
-      },
+      metadata,
     },
     update: {
       title: `「${food.name}」将在 3 天内到期`,
       content: '这件食材还有 1 天到期，可以优先安排到最近的菜谱中。',
       targetType: NotificationTargetType.food,
       targetId: food.id,
-      metadata: {
-        foodId: food.id,
-        foodName: food.name,
-        fridgeId: food.fridgeId,
-        shelfId: food.shelfId,
-        expireDate: food.expireDate.toISOString(),
-        daysToExpire: 1,
-      },
+      metadata,
+      ...updateOverrides,
+    },
+  }
+}
+
+function createPrismaForSync(
+  foods = [createFood()],
+  existingNotifications: Array<Record<string, unknown>> = [],
+  unreadCount = foods.length,
+) {
+  return {
+    foodItem: { findMany: jest.fn().mockResolvedValue(foods) },
+    notification: {
+      findMany: jest.fn().mockResolvedValue(existingNotifications),
+      upsert: jest.fn().mockResolvedValue({ id: 'notification_1' }),
+      updateMany: jest.fn().mockResolvedValue({ count: 0 }),
+      count: jest.fn().mockResolvedValue(unreadCount),
     },
   }
 }
@@ -96,41 +119,32 @@ describe('NotificationService', () => {
 
   it('syncs expiring foods before listing notifications', async () => {
     const food = createFood()
-    const findMany = jest.fn()
-      .mockResolvedValueOnce([food])
-      .mockResolvedValueOnce([{ id: 'notification_1', status: NotificationStatus.unread }])
-    const prisma = {
-      foodItem: { findMany },
-      notification: {
-        upsert: jest.fn().mockResolvedValue({ id: 'notification_1' }),
-        updateMany: jest.fn().mockResolvedValue({ count: 0 }),
-        findMany,
-        count: jest.fn().mockResolvedValue(1),
-      },
-    }
+    const list = [{ id: 'notification_1', status: NotificationStatus.unread }]
+    const prisma = createPrismaForSync([food])
+    prisma.notification.findMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce(list)
+
     const service = new NotificationService(prisma as never)
 
     await expect(service.list({ page: 1, pageSize: 20 }, USER_ID)).resolves.toEqual({
-      list: [{ id: 'notification_1', status: NotificationStatus.unread }],
+      list,
       total: 1,
       page: 1,
       pageSize: 20,
     })
 
     expect(prisma.foodItem.findMany).toHaveBeenCalledWith(expectedExpiringFoodQuery())
+    expect(prisma.notification.findMany).toHaveBeenCalledWith({
+      where: { userId: USER_ID, dedupeKey: { in: [`food_expiring:${food.id}`] } },
+      select: { dedupeKey: true, status: true, metadata: true },
+    })
     expect(prisma.notification.upsert).toHaveBeenCalledWith(expectedFoodNotificationUpsert(food))
   })
 
   it('does not create duplicate unread counts for the same food', async () => {
     const food = createFood()
-    const prisma = {
-      foodItem: { findMany: jest.fn().mockResolvedValue([food]) },
-      notification: {
-        upsert: jest.fn().mockResolvedValue({ id: 'notification_1' }),
-        updateMany: jest.fn().mockResolvedValue({ count: 0 }),
-        count: jest.fn().mockResolvedValue(1),
-      },
-    }
+    const prisma = createPrismaForSync([food])
     const service = new NotificationService(prisma as never)
 
     await expect(service.getUnreadCount(USER_ID)).resolves.toEqual({ count: 1 })
@@ -142,16 +156,129 @@ describe('NotificationService', () => {
     })
   })
 
+  it('reopens a read notification when food severity upgrades', async () => {
+    const food = createFood()
+    const prisma = createPrismaForSync([food], [
+      {
+        dedupeKey: `food_expiring:${food.id}`,
+        status: NotificationStatus.read,
+        metadata: { severity: 'notice' },
+      },
+    ])
+    const service = new NotificationService(prisma as never)
+
+    await service.getUnreadCount(USER_ID)
+
+    expect(prisma.notification.upsert).toHaveBeenCalledWith(expectedFoodNotificationUpsert(food, {
+      status: NotificationStatus.unread,
+      readAt: null,
+    }))
+  })
+
+  it('reopens read notifications created before severity metadata existed', async () => {
+    const food = createFood()
+    const prisma = createPrismaForSync([food], [
+      {
+        dedupeKey: `food_expiring:${food.id}`,
+        status: NotificationStatus.read,
+        metadata: { daysToExpire: 6 },
+      },
+    ])
+    const service = new NotificationService(prisma as never)
+
+    await service.getUnreadCount(USER_ID)
+
+    expect(prisma.notification.upsert).toHaveBeenCalledWith(expectedFoodNotificationUpsert(food, {
+      status: NotificationStatus.unread,
+      readAt: null,
+    }))
+  })
+
+  it('keeps a read notification read when severity does not upgrade', async () => {
+    const food = createFood()
+    const prisma = createPrismaForSync([food], [
+      {
+        dedupeKey: `food_expiring:${food.id}`,
+        status: NotificationStatus.read,
+        metadata: { severity: 'warning' },
+      },
+    ])
+    const service = new NotificationService(prisma as never)
+
+    await service.getUnreadCount(USER_ID)
+
+    expect(prisma.notification.upsert).toHaveBeenCalledWith(expectedFoodNotificationUpsert(food))
+  })
+
+  it('does not reopen unread notifications during severity upgrades', async () => {
+    const food = createFood()
+    const prisma = createPrismaForSync([food], [
+      {
+        dedupeKey: `food_expiring:${food.id}`,
+        status: NotificationStatus.unread,
+        metadata: { severity: 'notice' },
+      },
+    ])
+    const service = new NotificationService(prisma as never)
+
+    await service.getUnreadCount(USER_ID)
+
+    expect(prisma.notification.upsert).toHaveBeenCalledWith(expectedFoodNotificationUpsert(food))
+  })
+
+  it('builds today and expired metadata for higher severity foods', async () => {
+    const todayFood = createFood({ id: 'food_today', expireDate: new Date('2026-05-29T00:00:00.000Z') })
+    const expiredFood = createFood({ id: 'food_expired', expireDate: new Date('2026-05-28T00:00:00.000Z') })
+    const prisma = createPrismaForSync([todayFood, expiredFood])
+    const service = new NotificationService(prisma as never)
+
+    await service.getUnreadCount(USER_ID)
+
+    expect(prisma.notification.upsert).toHaveBeenCalledWith({
+      where: { userId_dedupeKey: { userId: USER_ID, dedupeKey: `food_expiring:${todayFood.id}` } },
+      create: {
+        userId: USER_ID,
+        type: NotificationType.food_expiring,
+        title: '「牛奶」今天到期',
+        content: '这件食材今天到期，可以优先安排到今天的菜谱中。',
+        targetType: NotificationTargetType.food,
+        targetId: todayFood.id,
+        dedupeKey: `food_expiring:${todayFood.id}`,
+        metadata: expectedMetadata(todayFood, { daysToExpire: 0, expiryLevel: 'today', severity: 'urgent' }),
+      },
+      update: {
+        title: '「牛奶」今天到期',
+        content: '这件食材今天到期，可以优先安排到今天的菜谱中。',
+        targetType: NotificationTargetType.food,
+        targetId: todayFood.id,
+        metadata: expectedMetadata(todayFood, { daysToExpire: 0, expiryLevel: 'today', severity: 'urgent' }),
+      },
+    })
+    expect(prisma.notification.upsert).toHaveBeenCalledWith({
+      where: { userId_dedupeKey: { userId: USER_ID, dedupeKey: `food_expiring:${expiredFood.id}` } },
+      create: {
+        userId: USER_ID,
+        type: NotificationType.food_expiring,
+        title: '「牛奶」已过期，建议尽快确认',
+        content: '这件食材已经超过保鲜期，可以确认是否还能使用，或及时标记为丢弃。',
+        targetType: NotificationTargetType.food,
+        targetId: expiredFood.id,
+        dedupeKey: `food_expiring:${expiredFood.id}`,
+        metadata: expectedMetadata(expiredFood, { daysToExpire: -1, expiryLevel: 'expired', severity: 'critical' }),
+      },
+      update: {
+        title: '「牛奶」已过期，建议尽快确认',
+        content: '这件食材已经超过保鲜期，可以确认是否还能使用，或及时标记为丢弃。',
+        targetType: NotificationTargetType.food,
+        targetId: expiredFood.id,
+        metadata: expectedMetadata(expiredFood, { daysToExpire: -1, expiryLevel: 'expired', severity: 'critical' }),
+      },
+    })
+  })
+
   it('marks stale unread food expiring notifications as read while syncing current foods', async () => {
     const food = createFood({ id: 'food_active' })
-    const prisma = {
-      foodItem: { findMany: jest.fn().mockResolvedValue([food]) },
-      notification: {
-        upsert: jest.fn().mockResolvedValue({ id: 'notification_1' }),
-        updateMany: jest.fn().mockResolvedValue({ count: 2 }),
-        count: jest.fn().mockResolvedValue(1),
-      },
-    }
+    const prisma = createPrismaForSync([food])
     const service = new NotificationService(prisma as never)
 
     await expect(service.getUnreadCount(USER_ID)).resolves.toEqual({ count: 1 })
@@ -172,14 +299,7 @@ describe('NotificationService', () => {
   })
 
   it('marks all unread food expiring notifications as read when no foods are currently expiring', async () => {
-    const prisma = {
-      foodItem: { findMany: jest.fn().mockResolvedValue([]) },
-      notification: {
-        upsert: jest.fn(),
-        updateMany: jest.fn().mockResolvedValue({ count: 2 }),
-        count: jest.fn().mockResolvedValue(0),
-      },
-    }
+    const prisma = createPrismaForSync([])
     const service = new NotificationService(prisma as never)
 
     await expect(service.getUnreadCount(USER_ID)).resolves.toEqual({ count: 0 })
@@ -193,9 +313,9 @@ describe('NotificationService', () => {
       },
       data: { status: NotificationStatus.read, readAt: NOW },
     })
+    expect(prisma.notification.findMany).not.toHaveBeenCalled()
     expect(prisma.notification.upsert).not.toHaveBeenCalled()
   })
-
 
   it('marks unread notification as read idempotently', async () => {
     const notification = { id: 'notification_1', userId: USER_ID, status: NotificationStatus.unread }
@@ -245,15 +365,10 @@ describe('NotificationService', () => {
 
   it('syncs current expiring notifications before marking all as read', async () => {
     const food = createFood()
-    const prisma = {
-      foodItem: { findMany: jest.fn().mockResolvedValue([food]) },
-      notification: {
-        upsert: jest.fn().mockResolvedValue({ id: 'notification_1' }),
-        updateMany: jest.fn()
-          .mockResolvedValueOnce({ count: 0 })
-          .mockResolvedValueOnce({ count: 3 }),
-      },
-    }
+    const prisma = createPrismaForSync([food])
+    prisma.notification.updateMany
+      .mockResolvedValueOnce({ count: 0 })
+      .mockResolvedValueOnce({ count: 3 })
     const service = new NotificationService(prisma as never)
 
     await expect(service.markAllRead({}, USER_ID)).resolves.toEqual({ updatedCount: 3 })
