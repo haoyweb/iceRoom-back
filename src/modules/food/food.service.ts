@@ -45,7 +45,13 @@ export class FoodService {
     const [list, total] = await Promise.all([
       this.prisma.foodItem.findMany({
         where,
-        include: { shelf: true },
+        include: {
+          shelf: true,
+          reminders: {
+            where: { userId },
+            select: { action: true, snoozedUntil: true },
+          },
+        },
         orderBy: [{ expireDate: 'asc' }, { createdAt: 'asc' }],
         skip: (page - 1) * pageSize,
         take: pageSize,
@@ -53,7 +59,10 @@ export class FoodService {
       this.prisma.foodItem.count({ where }),
     ])
 
-    return createPageResult(list.map((item) => this.withExpiryLevel(item)), total, page, pageSize)
+    return createPageResult(list.map(({ reminders, ...item }) => ({
+      ...this.withExpiryLevel(item),
+      reminder: this.toActiveReminderState(reminders[0] ?? null),
+    })), total, page, pageSize)
   }
 
   async getById(id: string, userId: string) {

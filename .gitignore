@@ -7,3 +7,5 @@ coverage
 
 # 外部数据源缓存（HowToCook 等开源菜谱仓库的本地克隆）
 .cache/
+
+.serena/

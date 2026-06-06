@@ -114,6 +114,41 @@ describe('FoodService', () => {
     expect(prisma.foodReminder.findUnique).not.toHaveBeenCalled()
   })
 
+  it('returns active reminder state in inventory list', async () => {
+    const snoozedUntil = new Date('2026-05-30T08:00:00.000Z')
+    const list = [
+      createFoodDetail({ reminders: [{ action: FoodReminderAction.ignore, snoozedUntil: null }] }),
+      createFoodDetail({ id: 'food_2', reminders: [{ action: FoodReminderAction.snooze, snoozedUntil }] }),
+      createFoodDetail({ id: 'food_3', reminders: [{ action: FoodReminderAction.snooze, snoozedUntil: new Date('2026-05-29T07:59:59.999Z') }] }),
+      createFoodDetail({ id: 'food_4', reminders: [] }),
+    ]
+    const findMany = jest.fn<Promise<typeof list>, [Prisma.FoodItemFindManyArgs]>().mockResolvedValue(list)
+    const prisma = {
+      foodItem: {
+        findMany,
+        count: jest.fn().mockResolvedValue(4),
+      },
+    }
+    const service = new FoodService(prisma as never, makeFridgeService() as never)
+
+    const result = await service.list({ fridgeId: 'fridge_1', status: FoodStatus.normal }, USER_ID)
+
+    const findManyArg = findMany.mock.calls[0]?.[0]
+    expect(findManyArg?.include).toEqual({
+      shelf: true,
+      reminders: {
+        where: { userId: USER_ID },
+        select: { action: true, snoozedUntil: true },
+      },
+    })
+    expect(result.list).toEqual([
+      expect.objectContaining({ reminder: { action: FoodReminderAction.ignore, snoozedUntil: null } }),
+      expect.objectContaining({ reminder: { action: FoodReminderAction.snooze, snoozedUntil } }),
+      expect.objectContaining({ reminder: null }),
+      expect.objectContaining({ reminder: null }),
+    ])
+  })
+
   it('marks expired food by expire date', async () => {
     const findMany = jest.fn<Promise<Array<{ id: string, expireDate: Date }>>, [Prisma.FoodItemFindManyArgs]>().mockResolvedValue([
       { id: 'food_1', expireDate: new Date('2020-01-01T00:00:00.000Z') },
