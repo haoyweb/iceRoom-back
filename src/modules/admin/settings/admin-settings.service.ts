@@ -6,11 +6,18 @@ export class AdminSettingsService {
   constructor(private readonly settings: SettingsService) {}
 
   async getSettings() {
-    const registration = await this.settings.getRegistrationSetting()
-    return { registration }
+    const [registration, visionRecognition] = await Promise.all([
+      this.settings.getRegistrationSetting(),
+      this.settings.getVisionRecognitionSetting(),
+    ])
+    return { registration, visionRecognition }
   }
 
   updateRegistration(enabled: boolean) {
     return this.settings.updateRegistrationSetting(enabled)
+  }
+
+  updateVisionRecognition(enabled: boolean) {
+    return this.settings.updateVisionRecognitionSetting(enabled)
   }
 }

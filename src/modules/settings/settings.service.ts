@@ -3,8 +3,13 @@ import { Prisma } from '@prisma/client'
 import { PrismaService } from '@/database/prisma.service'
 
 const REGISTRATION_KEY = 'registration'
+const VISION_RECOGNITION_KEY = 'visionRecognition'
 
 export interface RegistrationSettingValue {
+  enabled: boolean
+}
+
+export interface VisionRecognitionSettingValue {
   enabled: boolean
 }
 
@@ -35,7 +40,40 @@ export class SettingsService {
     return this.parseRegistrationValue(row.value)
   }
 
+  async getVisionRecognitionSetting(): Promise<VisionRecognitionSettingValue> {
+    const row = await this.prisma.appSetting.findUnique({ where: { key: VISION_RECOGNITION_KEY } })
+    if (!row)
+      return { enabled: true }
+
+    return this.parseVisionRecognitionValue(row.value)
+  }
+
+  async isVisionRecognitionEnabled(): Promise<boolean> {
+    const setting = await this.getVisionRecognitionSetting()
+    return setting.enabled
+  }
+
+  async updateVisionRecognitionSetting(enabled: boolean): Promise<VisionRecognitionSettingValue> {
+    const value: Prisma.InputJsonValue = { enabled }
+    const row = await this.prisma.appSetting.upsert({
+      where: { key: VISION_RECOGNITION_KEY },
+      create: { key: VISION_RECOGNITION_KEY, value },
+      update: { value },
+    })
+    return this.parseVisionRecognitionValue(row.value)
+  }
+
   private parseRegistrationValue(value: Prisma.JsonValue): RegistrationSettingValue {
+    if (value && typeof value === 'object' && !Array.isArray(value) && 'enabled' in value) {
+      const enabled = (value as { enabled?: unknown }).enabled
+      if (typeof enabled === 'boolean')
+        return { enabled }
+    }
+    return { enabled: true }
+  }
+
+
+  private parseVisionRecognitionValue(value: Prisma.JsonValue): VisionRecognitionSettingValue {
     if (value && typeof value === 'object' && !Array.isArray(value) && 'enabled' in value) {
       const enabled = (value as { enabled?: unknown }).enabled
       if (typeof enabled === 'boolean')

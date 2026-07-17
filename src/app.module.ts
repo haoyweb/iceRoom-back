@@ -3,6 +3,7 @@ import { ConfigModule } from '@nestjs/config'
 import { APP_GUARD } from '@nestjs/core'
 import { ThrottlerGuard, ThrottlerModule, seconds } from '@nestjs/throttler'
 import { AdminModule } from './modules/admin/admin.module'
+import { AppConfigModule } from './modules/app-config/app-config.module'
 import { AuthModule } from './modules/auth/auth.module'
 import { JwtAuthGuard } from './modules/auth/guards/jwt-auth.guard'
 import { FoodModule } from './modules/food/food.module'
@@ -40,6 +41,7 @@ import { DatabaseModule } from './database/database.module'
     DatabaseModule,
     StorageModule,
     SettingsModule,
+    AppConfigModule,
     HealthModule,
     UserModule,
     AuthModule,

@@ -6,6 +6,7 @@ import { AdminGuard } from '../guards/admin.guard'
 import { RolesGuard } from '../guards/roles.guard'
 import { AdminSettingsService } from './admin-settings.service'
 import { UpdateRegistrationSettingDto } from './dto/update-registration-setting.dto'
+import { UpdateVisionRecognitionSettingDto } from './dto/update-vision-recognition-setting.dto'
 
 @ApiTags('admin-settings')
 @UseGuards(AdminGuard, RolesGuard)
@@ -24,5 +25,13 @@ export class AdminSettingsController {
   @ApiOkResponse({ description: '更新 C 端注册开关' })
   updateRegistration(@Body() dto: UpdateRegistrationSettingDto) {
     return this.service.updateRegistration(dto.enabled)
+  }
+
+
+  @Patch('vision-recognition')
+  @Roles(UserRole.super_admin)
+  @ApiOkResponse({ description: '更新 C 端拍照识别开关' })
+  updateVisionRecognition(@Body() dto: UpdateVisionRecognitionSettingDto) {
+    return this.service.updateVisionRecognition(dto.enabled)
   }
 }

@@ -6,6 +6,7 @@ import { BusinessException } from '@/common/errors/business.exception'
 import { ErrorCode } from '@/common/errors/error-code.enum'
 import { PrismaService } from '@/database/prisma.service'
 import { FridgeService } from '@/modules/fridge/fridge.service'
+import { SettingsService } from '@/modules/settings/settings.service'
 import { StorageService } from '@/modules/storage/storage.service'
 import type { RecognizeIngredientsDto } from './dto/recognize-ingredients.dto'
 import type { IgnoredRecognitionItemDto, RecognizedIngredientDto } from './dto/recognized-ingredient.dto'
@@ -30,10 +31,12 @@ export class VisionRecognitionService {
     private readonly fridgeService: FridgeService,
     private readonly prisma: PrismaService,
     private readonly providerFactory: VisionIngredientProviderFactory,
+    private readonly settingsService: SettingsService,
     private readonly storageService: StorageService,
   ) {}
 
   async createIngredientJob(file: UploadedImageFile | undefined, data: RecognizeIngredientsDto, userId: string) {
+    await this.assertVisionRecognitionEnabled()
     void this.cleanupExpiredImages(userId).catch(() => undefined)
     this.validateImage(file)
     await this.validateContext(data, userId)
@@ -220,6 +223,13 @@ export class VisionRecognitionService {
       return null
     }
     return total.toFixed(6)
+  }
+
+  private async assertVisionRecognitionEnabled() {
+    if (await this.settingsService.isVisionRecognitionEnabled()) {
+      return
+    }
+    throw new BusinessException(ErrorCode.VISION_RECOGNITION_DISABLED, '拍照识别功能已关闭', HttpStatus.FORBIDDEN)
   }
 
   private async assertVisionDailyQuota(userId: string) {
